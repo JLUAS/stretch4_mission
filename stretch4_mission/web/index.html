@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stretch 4 Missions</title>
+<style>
+  :root { --navy:#122837; --pink:#FBCBDA; --pink-ink:#C2306A; --blue:#0550B3; --teal:#0A688A;
+          --bg:#F6F8FA; --card:#fff; --text:#122837; --muted:#5A6B7B; --line:#DCE3EA; --chip:#EEF2F6; --field:#fff;
+          --accent:var(--blue); --ok:#13804F; --bad:#C62828; --warn:#A86400;
+          --shadow:0 1px 2px rgba(18,40,55,.06), 0 4px 16px rgba(18,40,55,.06); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0B1924; --card:#122837; --text:#E8EEF4; --muted:#9DB0C2; --line:#24435A; --chip:#1A3448; --field:#0E2130;
+            --accent:#5C9BFF; --pink-ink:#FBCBDA; --ok:#4CC38A; --bad:#FF7A7A; --warn:#F2B14C; --shadow:none; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:17px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+  /* ---------- header ---------- */
+  header { background:var(--navy); color:#fff; border-bottom:4px solid var(--pink); }
+  .bar { width:min(94%, 1800px); margin:0 auto; padding:12px 0; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:12px; margin-right:auto; }
+  .brand h1 { font-size:22px; margin:0; letter-spacing:.2px; }
+  .brand .sub { font-size:13px; color:#B9C8D6; }
+  .flow { list-style:none; display:flex; gap:6px; margin:0; padding:0; flex-wrap:wrap; }
+  .flow li { display:flex; align-items:center; gap:6px; padding:4px 12px 4px 4px; border-radius:999px; background:rgba(255,255,255,.08); font-size:15px; color:#B9C8D6; }
+  .flow li b { width:22px; height:22px; border-radius:50%; display:grid; place-items:center; background:rgba(255,255,255,.15); color:#fff; font-size:13px; }
+  .flow li.done { color:#fff; } .flow li.done b { background:var(--ok); }
+  .flow li.current { background:var(--pink); color:var(--navy); font-weight:600; } .flow li.current b { background:var(--navy); }
+
+  /* ---------- layout ---------- */
+  main { width:min(94%, 1800px); margin:0 auto; padding:16px 0 32px; display:grid; gap:16px;
+         grid-template-columns:minmax(0, 1fr); }
+  @media (min-width: 900px) { main { grid-template-columns:380px minmax(0, 1fr); } .robot { grid-row:span 2; } .full { grid-column:1 / -1; } }
+  @media (min-width: 1400px) { main { grid-template-columns:380px minmax(0, 1.25fr) minmax(0, 1fr); } .robot { grid-row:span 2; } .sm-card { grid-column:2 / -1; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; min-width:0; box-shadow:var(--shadow); }
+  h2 { font-size:18px; margin:0 0 14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  h2 .num { width:26px; height:26px; border-radius:8px; display:grid; place-items:center; background:var(--pink); color:var(--navy); font-size:15px; }
+  h2 .grow { margin-left:auto; }
+  h3.sub { font-size:15px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:18px 0 8px; display:flex; gap:8px; align-items:center; }
+
+  /* ---------- controls ---------- */
+  label { display:block; font-size:15px; color:var(--muted); margin-bottom:3px; }
+  input, select { width:100%; min-width:0; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
+                  background:var(--field); color:var(--text); font:inherit; }
+  input:focus, select:focus { border-color:var(--accent); }
+  button { font:inherit; font-weight:600; padding:8px 14px; border-radius:8px; border:1px solid var(--line);
+           background:var(--card); color:var(--text); cursor:pointer; transition:background .15s, border-color .15s; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary:hover:not(:disabled) { filter:brightness(1.1); }
+  button.danger { background:var(--bad); border-color:var(--bad); color:#fff; }
+  button.small { padding:5px 10px; font-size:15px; }
+  button.big { padding:12px 20px; font-size:18px; width:100%; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .actions.stretch > * { flex:1; }
+  .field { margin-bottom:12px; }
+  .muted { color:var(--muted); font-size:15px; }
+  .msg { min-height:1.4em; font-size:15px; margin-top:8px; overflow-wrap:anywhere; }
+  .msg.err { color:var(--bad); } .msg.ok { color:var(--ok); }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:13px; font-weight:600; background:var(--chip); color:var(--muted); }
+  .pill.on { background:var(--ok); color:#fff; } .pill.bad { background:var(--bad); color:#fff; }
+  code { background:var(--chip); padding:1px 5px; border-radius:4px; font-size:13px; }
+
+  /* ---------- robot processes ---------- */
+  .comp { display:grid; gap:6px; }
+  .comp-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:4px 10px; align-items:center;
+              padding:10px 12px; border:1px solid var(--line); border-radius:10px; }
+  .comp-row strong { font-size:16px; }
+  .comp-row .state { grid-column:1 / -1; font-size:13px; color:var(--muted); overflow-wrap:anywhere; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--line); margin-right:8px; vertical-align:middle; }
+  .dot.ok { background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+  .dot.wait { background:var(--warn); } .dot.bad { background:var(--bad); }
+  /* toggle switch: the knob shows the real state, whoever started the process */
+  button.switch { position:relative; width:72px; height:30px; padding:0 10px 0 30px; border-radius:999px; font-size:13px;
+                  background:var(--chip); border-color:var(--line); color:var(--muted); text-align:center; }
+  button.switch::before { content:''; position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%;
+                          background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.3); transition:left .15s; }
+  button.switch[aria-pressed="true"] { background:var(--ok); border-color:var(--ok); color:#fff; padding:0 30px 0 10px; }
+  button.switch[aria-pressed="true"]::before { left:calc(100% - 25px); }
+  button.switch[aria-pressed="true"].wait { background:var(--warn); border-color:var(--warn); }
+  .pose { font-variant-numeric:tabular-nums; background:var(--chip); border-radius:8px; padding:8px 10px; font-size:15px; margin-top:8px; }
+
+  /* ---------- map ---------- */
+  .map-wrap { background:var(--chip); border-radius:10px; padding:8px; }
+  canvas#map { max-width:100%; max-height:560px; width:auto; height:auto; display:block; margin:0 auto; border-radius:6px; image-rendering:pixelated; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; margin-top:8px; }
+  .legend span::before { content:''; display:inline-block; width:12px; height:12px; border-radius:50%; margin-right:6px; vertical-align:-1px; }
+  .legend .l-robot::before { border:3px solid var(--blue); }
+  .legend .l-goal::before { background:#E0457B; }
+
+  /* ---------- missions ---------- */
+  .mlist { display:grid; gap:8px; }
+  .mcard { border:1px solid var(--line); border-radius:10px; padding:12px; cursor:pointer; transition:border-color .15s, background .15s; }
+  .mcard:hover { border-color:var(--accent); }
+  .mcard.selected { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 7%, var(--card)); }
+  .mcard .top { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+  .mcard .top strong { font-size:17px; }
+  .mcard .err { color:var(--bad); font-size:15px; }
+  .chain { display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin:8px 0 10px; font-size:13px; }
+  .chain .p { background:var(--pink); color:var(--navy); padding:2px 8px; border-radius:999px; font-weight:600; }
+  .chain .to { color:var(--muted); }
+  .empty { text-align:center; padding:20px 8px; color:var(--muted); border:1px dashed var(--line); border-radius:10px; }
+
+  /* ---------- state machine ---------- */
+  /* status colours: pending grey, running Hello blue, completed green, skipped grey dashed, failed red; each also has an icon + word */
+  .sm-steps { list-style:none; margin:0 0 16px; padding:0; display:flex; overflow-x:auto; }
+  .sm-steps li { flex:1 0 120px; position:relative; text-align:center; padding-top:2px; }
+  .sm-steps li + li::before { content:''; position:absolute; top:19px; right:calc(50% + 20px); width:calc(100% - 40px); height:3px; background:var(--line); }
+  .sm-steps li.st-done + li::before, .sm-steps li.st-skipped + li::before { background:var(--ok); }
+  .sm-steps .tl { display:inline-flex; flex-direction:column; align-items:center; gap:4px; padding:0 4px; max-width:100%; }
+  .sm-steps button.tl { all:unset; cursor:pointer; display:inline-flex; flex-direction:column; align-items:center; gap:4px; padding:0 4px; max-width:100%; }
+  .sm-steps button:focus-visible { outline:3px solid var(--accent); outline-offset:2px; border-radius:8px; }
+  .sm-steps .ic { width:34px; height:34px; font-size:16px; }
+  .sm-steps .nm { font-weight:600; font-size:15px; overflow-wrap:anywhere; }
+  .sm-steps .sub { font-size:13px; color:var(--muted); }
+  .sm-steps li.viewing .nm { color:var(--accent); text-decoration:underline; text-underline-offset:4px; text-decoration-thickness:2px; }
+  .ic { display:inline-grid; place-items:center; border-radius:50%; border:2px solid var(--line); background:var(--card); color:var(--muted); font-weight:700; flex:none; }
+  .st-active .ic { background:var(--accent); border-color:var(--accent); color:#fff; box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .st-done .ic { background:var(--ok); border-color:var(--ok); color:#fff; }
+  .st-failed .ic { background:var(--bad); border-color:var(--bad); color:#fff; }
+  .st-skipped .ic { border-style:dashed; }
+  .sm-phases-title { font-size:14px; color:var(--muted); margin:0 0 8px; }
+  .sm-phases { list-style:none; margin:0; padding:0; display:grid; gap:8px; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); }
+  .sm-phases li { display:flex; align-items:center; gap:10px; padding:10px 12px; border:2px solid var(--line); border-radius:10px; background:var(--bg); min-width:0; }
+  .sm-phases li .ic { width:28px; height:28px; font-size:14px; }
+  .sm-phases .lb { font-weight:600; font-size:15px; overflow-wrap:anywhere; }
+  .sm-phases .ws { font-size:13px; color:var(--muted); }
+  .sm-phases li.st-active { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, var(--card)); }
+  .sm-phases li.st-active .ws { color:var(--accent); font-weight:600; }
+  .sm-phases li.st-done { border-color:color-mix(in srgb, var(--ok) 45%, var(--line)); }
+  .sm-phases li.st-failed { border-color:var(--bad); background:color-mix(in srgb, var(--bad) 8%, var(--card)); }
+  .sm-phases li.st-failed .ws { color:var(--bad); font-weight:600; }
+  .sm-phases li.st-skipped { border-style:dashed; } .sm-phases li.st-skipped .lb { color:var(--muted); }
+  .sm-bottom { display:grid; gap:12px; margin-top:16px; grid-template-columns:minmax(0, 1fr); }
+  .sm-now, .sm-error { border-radius:10px; padding:12px 14px; overflow-wrap:anywhere; }
+  .sm-now { background:var(--chip); border-left:4px solid var(--accent); }
+  .sm-now h3, .sm-error h3 { margin:0 0 4px; font-size:16px; }
+  .sm-now p { margin:0 0 8px; }
+  .sm-now dl { display:grid; grid-template-columns:max-content minmax(0, 1fr); gap:4px 14px; margin:0; font-size:14px; }
+  .sm-now dt { color:var(--muted); } .sm-now dd { margin:0; font-variant-numeric:tabular-nums; }
+  .sm-error { background:color-mix(in srgb, var(--bad) 10%, var(--card)); border:2px solid var(--bad); }
+  .sm-error h3 { color:var(--bad); }
+  .sm-error[hidden] { display:none; }
+
+  /* ---------- editor ---------- */
+  .step { border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; background:var(--bg); }
+  .step-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
+  .step-head strong { display:flex; align-items:center; gap:8px; }
+  .step-head strong::before { content:attr(data-n); width:26px; height:26px; border-radius:50%; display:grid; place-items:center; background:var(--navy); color:var(--pink); font-size:15px; }
+  .grid2 { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; margin-bottom:10px; align-items:end; }
+  .grid3 { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin:6px 0 10px; }
+  @media (max-width: 600px) { .grid2, .grid3 { grid-template-columns:minmax(0, 1fr); } }
+  .s-scan { margin-top:8px; padding:8px 10px; border-radius:8px; background:var(--chip); }
+
+  footer { background:var(--navy); color:#B9C8D6; border-top:4px solid var(--pink); text-align:center; padding:16px; font-size:15px; }
+  footer strong { color:#fff; }
+
+  /* ---------- log ---------- */
+  details summary { cursor:pointer; font-weight:700; font-size:18px; list-style:none; display:flex; gap:8px; align-items:center; }
+  details summary::before { content:'▸'; color:var(--muted); transition:transform .15s; }
+  details[open] summary::before { transform:rotate(90deg); }
+  pre { background:var(--navy); color:#DCE6EF; border-radius:10px; padding:12px; margin:10px 0 0;
+        max-height:340px; overflow:auto; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <div><h1>Stretch 4 Missions</h1><div class="sub">Nav2 + trained policies · mission control</div></div>
+    </div>
+    <ol class="flow" id="flow" aria-label="What to do next">
+      <li><b>1</b>Turn on the robot</li>
+      <li><b>2</b>Localize</li>
+      <li><b>3</b>Run a mission</li>
+    </ol>
+  </div>
+</header>
+
+<main>
+  <!-- 1. Robot -->
+  <section class="robot" aria-labelledby="h-nav">
+    <h2 id="h-nav"><span class="num">1</span>Robot <span id="nav-pill" class="pill grow">Nav2 off</span></h2>
+    <div class="field">
+      <label for="nav-map">Map (for Nav2)</label>
+      <select id="nav-map"></select>
+    </div>
+    <div class="comp" id="components" aria-label="Robot processes"><div class="muted">Loading…</div></div>
+    <div class="actions stretch" style="margin-top:12px">
+      <button id="btn-nav-start" class="primary">Start all</button>
+      <button id="btn-nav-stop">Stop all</button>
+    </div>
+    <h3 class="sub">2 · Localization <span id="loc-pill" class="pill">no</span></h3>
+    <button id="btn-localize" class="big">Localize (global)</button>
+    <div id="loc-text" class="muted" role="status" style="margin-top:8px"></div>
+    <div class="pose"><span class="muted">Robot (map → base_link)</span><br><span id="robot-pose">—</span></div>
+    <div id="nav-msg" class="msg" role="status"></div>
+  </section>
+
+  <section aria-labelledby="h-map">
+    <h2 id="h-map">Map <span id="map-name" class="muted"></span></h2>
+    <div class="map-wrap">
+      <canvas id="map" width="400" height="300" role="img" aria-label="Map with the robot and the selected mission's goals"></canvas>
+    </div>
+    <div class="legend muted"><span class="l-robot">Robot (live)</span><span class="l-goal">Numbered goals: running mission, or the one in the editor</span></div>
+  </section>
+
+  <!-- 3. Missions -->
+  <section aria-labelledby="h-missions">
+    <h2 id="h-missions"><span class="num">3</span>Missions <button id="btn-new" class="small grow">+ New mission</button></h2>
+    <div id="missions" class="mlist"><div class="muted">Loading…</div></div>
+    <div id="m-msg" class="msg" role="status"></div>
+  </section>
+
+  <section class="sm-card full" aria-labelledby="h-sm">
+    <h2 id="h-sm">State machine <span id="sm-name" class="muted"></span> <span id="sm-pill" class="pill">idle</span>
+      <button id="btn-stop" class="danger grow" disabled>■ Stop mission (Ctrl-C)</button></h2>
+    <div id="sm-empty" class="empty">Select a mission to see its state machine.</div>
+    <div id="sm">
+      <ol id="sm-steps" class="sm-steps" aria-label="Mission steps"></ol>
+      <h3 id="sm-phases-title" class="sm-phases-title"></h3>
+      <ol id="sm-phases" class="sm-phases" aria-labelledby="sm-phases-title"></ol>
+      <div class="sm-bottom">
+        <div id="sm-error" class="sm-error" role="alert" hidden><h3 id="sm-error-title"></h3><div id="sm-error-text"></div></div>
+        <div class="sm-now"><h3 id="sm-now-title"></h3><p id="sm-now-text" aria-live="polite"></p><dl id="sm-now-facts"></dl></div>
+      </div>
+    </div>
+    <div id="s-msg" class="msg" role="status"></div>
+  </section>
+
+  <!-- Editor -->
+  <section class="full" aria-labelledby="h-edit">
+    <h2 id="h-edit">✎ Edit mission</h2>
+    <form id="form" novalidate>
+      <div class="grid2">
+        <div><label for="f-name">Name (letters, digits, _ or -; same name overwrites)</label>
+             <input id="f-name" required pattern="[A-Za-z0-9_\-]{1,64}" autocomplete="off"></div>
+        <div><label for="f-map">Map (goals are in this map's frame)</label><select id="f-map" required></select></div>
+      </div>
+      <div id="steps"></div>
+      <div class="actions">
+        <button type="button" id="btn-add-step">+ Add policy step</button>
+        <button type="submit" class="primary">Save mission</button>
+      </div>
+      <div id="f-msg" class="msg" role="status"></div>
+    </form>
+  </section>
+
+  <section class="full" aria-labelledby="h-log">
+    <details>
+      <summary id="h-log">Log</summary>
+      <div class="actions" style="margin-top:10px"><label for="log-which" style="margin:0">Show</label>
+        <select id="log-which" style="width:auto"><option value="mission">mission</option><option value="driver">driver</option><option value="lidar">lidars</option><option value="nav2">nav2</option><option value="bridge">bridge</option></select>
+        <span class="muted" id="log-file"></span></div>
+      <pre id="log" tabindex="0" aria-label="Log">—</pre>
+    </details>
+  </section>
+</main>
+<footer>Developed by <strong>Jose Luis Urquieta Aguilar</strong> and <strong>Samuel Francisco Cabrera Ramirez</strong></footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PHASES = ['RETRACTING_ARM', 'CHECKING_POSE', 'NAVIGATING', 'ALIGNING', 'PREPARING_POLICY', 'EXECUTING_POLICY'];
+const PHASE_LABEL = { RETRACTING_ARM: 'Retract arm', CHECKING_POSE: 'Verify pose', NAVIGATING: 'Navigate',
+                      ALIGNING: 'Align (lidar)', PREPARING_POLICY: 'Prepare lift', EXECUTING_POLICY: 'Execute policy' };
+// what mission_controller.py does in each phase
+const PHASE_HELP = {
+  RETRACTING_ARM: 'Lifting to a safe height, retracting the arm and stowing the wrist so the base can drive.',
+  CHECKING_POSE: 'Comparing the robot pose with the step goal; navigation is skipped if it is already there.',
+  NAVIGATING: 'Nav2 is driving the base to the step goal.',
+  ALIGNING: 'Waiting for the base to stop, then matching the lidar to the saved reference to reach the recorded spot.',
+  PREPARING_POLICY: 'Raising the lift to its top before moving to the policy start pose.',
+  EXECUTING_POLICY: 'Going to the policy start pose, then running the policy (stream + exec on the robot, run on the Jetson).',
+};
+const STATUS = { pending: ['○', 'Pending'], active: ['●', 'Running'], done: ['✓', 'Completed'], skipped: ['↷', 'Skipped'], failed: ['✕', 'Failed'] };
+const ROBOT_COLOR = '#0550B3', GOAL_COLOR = '#E0457B';
+let S = null, missions = [], policies = {}, maps = [], selected = null, mapCache = {}, formTouched = false;
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} :
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+const say = (el, text, ok) => { el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err'); };
+const base = (p) => (p || '').split('/').pop();
+const f2 = (v) => (typeof v === 'number' ? v.toFixed(2) : '—');
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+function options(sel, items, value) {
+  sel.replaceChildren(...items.map(([v, t]) => new Option(t, v)));
+  if (value !== undefined) sel.value = value;
+}
+
+// ---------- map ----------
+async function loadMap(path) {
+  if (!path) return null;
+  if (mapCache[path]) return mapCache[path];
+  const q = '?path=' + encodeURIComponent(path);
+  const meta = await api('/api/map_meta' + q);
+  const buf = await (await fetch('/api/map_image' + q)).arrayBuffer();
+  const img = document.createElement('canvas');
+  const bytes = new Uint8Array(buf);
+  if (String.fromCharCode(bytes[0], bytes[1]) === 'P5') {          // binary PGM (map_saver default)
+    const tok = []; let i = 2;
+    while (tok.length < 3) {
+      while (/\s/.test(String.fromCharCode(bytes[i]))) i++;
+      if (bytes[i] === 35) { while (bytes[i] !== 10) i++; continue; }  // '#' comment
+      let s = ''; while (!/\s/.test(String.fromCharCode(bytes[i]))) s += String.fromCharCode(bytes[i++]);
+      tok.push(+s);
+    }
+    i++;
+    const [w, h, max] = tok; img.width = w; img.height = h;
+    const ctx = img.getContext('2d'), data = ctx.createImageData(w, h);
+    for (let k = 0; k < w * h; k++) {
+      let v = Math.round(bytes[i + k] * 255 / max); if (meta.negate) v = 255 - v;
+      data.data.set([v, v, v, 255], k * 4);
+    }
+    ctx.putImageData(data, 0, 0);
+  } else {                                                          // PNG map
+    const bitmap = await createImageBitmap(new Blob([buf]));
+    img.width = bitmap.width; img.height = bitmap.height; img.getContext('2d').drawImage(bitmap, 0, 0);
+  }
+  return (mapCache[path] = { meta, img });
+}
+
+async function drawMap() {
+  const path = S?.nav?.map || $('f-map').value || $('nav-map').value;
+  $('map-name').textContent = base(path) + (S?.nav?.map ? ' (navigation)' : ' (preview)');
+  let m; try { m = await loadMap(path); } catch (e) { return; }
+  if (!m) return;
+  const c = $('map'), scale = Math.max(1, Math.floor(800 / Math.max(m.img.width, m.img.height)));
+  c.width = m.img.width * scale; c.height = m.img.height * scale;
+  const ctx = c.getContext('2d'); ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(m.img, 0, 0, c.width, c.height);
+  const res = m.meta.resolution, [ox, oy] = m.meta.origin;
+  const px = (x, y) => [(x - ox) / res * scale, c.height - (y - oy) / res * scale];
+  const arrow = (x, y, yaw, len, color, label) => {
+    const [u, v] = px(x, y), [u2, v2] = px(x + Math.cos(yaw) * len, y + Math.sin(yaw) * len);
+    ctx.strokeStyle = ctx.fillStyle = color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(u, v); ctx.lineTo(u2, v2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(u, v, 4, 0, 7); ctx.fill();
+    if (label) {   // numbered badge
+      ctx.beginPath(); ctx.arc(u + 12, v - 12, 10, 0, 7); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, u + 12, v - 11); ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+    }
+  };
+  // goals: the running mission's, else the steps in the editor
+  const goals = S?.mission?.running && S.trace?.steps ? S.trace.steps.map((s) => s.goal) : formSteps().map((s) => s.goal);
+  goals.forEach((g, i) => { if (isFinite(g.x)) arrow(g.x, g.y, g.yaw, 0.3, GOAL_COLOR, String(i + 1)); });
+  if (S?.pose && S?.nav?.map === path) {
+    const [u, v] = px(S.pose.x, S.pose.y);
+    ctx.strokeStyle = ROBOT_COLOR; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(u, v, 0.225 / res * scale, 0, 7); ctx.stroke();   // Stretch base radius
+    arrow(S.pose.x, S.pose.y, S.pose.yaw, 0.35, ROBOT_COLOR);
+  }
+}
+
+// ---------- state machine ----------
+let smView = null;   // step the user clicked to inspect: { key, index }; null follows the live step
+const stepStatus = (s) => { const v = PHASES.map((p) => s.phases[p] || 'pending');
+  return v.includes('failed') ? 'failed' : v.includes('active') ? 'active' : v.every((x) => x === 'done' || x === 'skipped') ? 'done'
+    : v.some((x) => x !== 'pending') ? 'active' : 'pending'; };
+const setText = (id, text) => { if ($(id).textContent !== text) $(id).textContent = text; };   // no re-announce every poll
+function renderStateMachine() {
+  // the live/last run, unless another mission is selected
+  const live = S?.trace && S.trace.mission && (S.mission.running || !selected || S.trace.mission === selected) ? S.trace : null;
+  const name = live ? live.mission : selected;
+  const def = missions.find((m) => m.name === name && !m.error);
+  $('sm-name').textContent = name || '(select a mission)';
+  const state = live ? live.state : 'idle';
+  const running = !!(S?.mission?.running && live);
+  $('sm-pill').textContent = live ? state : 'not running';
+  $('sm-pill').className = 'pill' + (state === 'FAILED' ? ' bad' : state === 'COMPLETED' || running ? ' on' : '');
+  const steps = live ? live.steps : def ? def.steps.map((s) => ({ policy: s.policy, goal: s.goal, phases: {} })) : [];
+  $('sm').hidden = !steps.length; $('sm-empty').hidden = !!steps.length;
+  if (!steps.length) { $('sm-phases').replaceChildren(); $('sm-steps').replaceChildren(); return; }
+
+  // which step to show: the clicked one, else the live/failed one, else the last finished, else the first
+  const key = `${name}|${live?.state}|${live?.step}`;
+  if (smView && smView.key !== key) smView = null;   // the run moved on: follow it again
+  const liveIdx = live && live.step !== null && live.step !== undefined ? live.step : state === 'COMPLETED' ? steps.length - 1 : 0;
+  const view = smView ? smView.index : liveIdx;
+
+  // 1. step timeline: Start → steps → Done
+  const startSt = !live ? 'pending' : state === 'INITIALIZING' ? 'active' : state === 'FAILED' && live.step === null ? 'failed' : 'done';
+  const endSt = state === 'COMPLETED' ? 'done' : state === 'FAILED' ? 'failed' : 'pending';
+  const item = (st, icon, nm, sub, idx) => {
+    const li = el('li', 'st-' + st + (idx === view ? ' viewing' : ''));
+    const inner = el(idx === undefined ? 'div' : 'button', 'tl');
+    const ic = el('span', 'ic', icon); ic.setAttribute('aria-hidden', 'true');
+    inner.append(ic, el('span', 'nm', nm), el('span', 'sub', sub));
+    if (idx !== undefined) {
+      inner.setAttribute('aria-label', `Step ${idx + 1}, ${nm}: ${sub}. Show its phases`);
+      if (idx === view) inner.setAttribute('aria-current', 'step');
+      inner.onclick = () => { smView = idx === liveIdx ? null : { key, index: idx }; renderStateMachine(); };
+    }
+    li.append(inner); return li;
+  };
+  $('sm-steps').replaceChildren(
+    item(startSt, STATUS[startSt][0], 'Start', startSt === 'active' ? 'Initializing' : STATUS[startSt][1]),
+    ...steps.map((s, i) => { const st = stepStatus(s); return item(st, st === 'pending' || st === 'active' ? String(i + 1) : STATUS[st][0], s.policy, STATUS[st][1], i); }),
+    item(endSt, endSt === 'failed' ? '✕' : '⚑', endSt === 'failed' ? 'Failed' : 'Done', endSt === 'done' ? 'Completed' : endSt === 'failed' ? 'Stopped' : 'Pending'));
+
+  // 2. phases of the viewed step
+  const step = steps[view];
+  setText('sm-phases-title', `Step ${view + 1} of ${steps.length} · ${step.policy}${smView ? ' (inspecting; click the current step to follow it)' : ''}`);
+  $('sm-phases').replaceChildren(...PHASES.map((p) => {
+    const st = step.phases[p] || 'pending';
+    const li = el('li', 'st-' + st);
+    const ic = el('span', 'ic', STATUS[st][0]); ic.setAttribute('aria-hidden', 'true');
+    const txt = el('div'); txt.append(el('div', 'lb', PHASE_LABEL[p]), el('div', 'ws', STATUS[st][1]));
+    li.append(ic, txt); return li;
+  }));
+
+  // 3. error: the failed phase (if any) and the controller's reason
+  const failedPhase = live && state === 'FAILED' ? PHASES.find((p) => live.steps[live.step ?? -1]?.phases[p] === 'failed') : undefined;
+  $('sm-error').hidden = state !== 'FAILED';
+  if (state === 'FAILED') {
+    setText('sm-error-title', failedPhase ? `✕ Failed in “${PHASE_LABEL[failedPhase]}” · step ${live.step + 1} (${live.steps[live.step].policy})`
+      : live.step === null || live.step === undefined ? '✕ Failed before the first step (initializing)' : `✕ Failed at step ${live.step + 1} (${live.steps[live.step].policy})`);
+    setText('sm-error-text', live.detail ? 'Reason: ' + live.detail : 'No reason was reported.');
+  }
+
+  // 4. current activity: real values only (controller detail, live pose from TF, step goal, policy result)
+  const facts = [];
+  let title, text;
+  if (!live) { title = 'Not running'; text = 'Turn on the robot, localize, then press ▶ Start on this mission.'; }
+  else if (state === 'INITIALIZING') { title = 'Initializing'; text = 'Waiting for Nav2 and localization before the first step.'; }
+  else if (state === 'COMPLETED') { title = 'Mission completed'; text = 'All policy processes finished. Check the tasks on the robot: this does not mean each task succeeded.'; }
+  else if (state === 'FAILED') { title = 'Mission stopped'; text = 'See the reason above. Fix it, then start the mission again.'; }
+  else { title = `${PHASE_LABEL[state] || state} · step ${live.step + 1} of ${steps.length} (${steps[live.step].policy})`; text = PHASE_HELP[state] || ''; }
+  if (live?.detail && state !== 'FAILED') facts.push(['Controller', live.detail]);
+  if (step.goal) facts.push([`Goal (step ${view + 1})`, `x ${f2(step.goal.x)}, y ${f2(step.goal.y)}, yaw ${f2(step.goal.yaw)} rad`]);
+  if (S?.pose) {
+    facts.push(['Robot pose (live)', `x ${f2(S.pose.x)}, y ${f2(S.pose.y)}, yaw ${f2(S.pose.yaw)} rad`]);
+    if (running && view === liveIdx && ['CHECKING_POSE', 'NAVIGATING', 'ALIGNING'].includes(state) && step.goal) {
+      const d = Math.hypot(step.goal.x - S.pose.x, step.goal.y - S.pose.y);
+      const dyaw = Math.atan2(Math.sin(step.goal.yaw - S.pose.yaw), Math.cos(step.goal.yaw - S.pose.yaw));
+      facts.push(['To goal', `${d.toFixed(3)} m, ${dyaw.toFixed(3)} rad`]);
+    }
+  }
+  if (step.result) facts.push(['Policy result', step.result]);
+  setText('sm-now-title', title); setText('sm-now-text', text);
+  $('sm-now-facts').replaceChildren(...facts.flatMap(([k, v]) => [el('dt', '', k), el('dd', '', v)]));
+}
+
+// header guide: which of the three steps is done, which is next
+function renderFlow() {
+  const done = [S.components.every((c) => c.ready), S.localization.localized, S.mission.running || S.trace?.state === 'COMPLETED'];
+  const next = done.indexOf(false);
+  [...$('flow').children].forEach((li, i) => {
+    li.className = done[i] ? 'done' : i === next ? 'current' : '';
+    if (i === next) li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
+  });
+}
+
+// ---------- status loop ----------
+async function refreshStatus() {
+  try {
+    S = await api('/api/status?log=' + $('log-which').value);
+  } catch (e) { $('loc-text').textContent = 'UI server unreachable: ' + e.message; return; }
+  const navOn = S.nav.running;
+  $('nav-pill').textContent = navOn ? 'Nav2 ready' + (S.nav.map ? ' · ' + base(S.nav.map) : '') : 'Nav2 off';
+  $('nav-pill').className = 'pill grow' + (navOn ? ' on' : '');
+  $('nav-map').disabled = S.components.find((c) => c.name === 'nav2').on;
+  if (S.nav.map && $('nav-map').value !== S.nav.map) $('nav-map').value = S.nav.map;
+  if (S.nav.map && !formTouched && $('f-map').value !== S.nav.map) $('f-map').value = S.nav.map;  // new missions: Nav2's map
+  renderComponents();
+  $('btn-nav-start').disabled = !S.components.some((c) => c.startable);
+  $('btn-nav-stop').disabled = !S.components.some((c) => c.stoppable) || S.mission.running;
+  const L = S.localization;
+  $('loc-pill').textContent = L.busy ? 'localizing…' : L.localized ? 'yes' : 'no';
+  $('loc-pill').className = 'pill' + (L.localized && !L.busy ? ' on' : '');
+  $('btn-localize').disabled = !navOn || L.busy || S.mission.running;
+  $('btn-localize').className = 'big' + (navOn && !L.localized && !L.busy ? ' primary' : '');   // the next thing to press
+  $('loc-text').textContent = L.text + (L.sigma_xy !== null && L.sigma_xy !== undefined ? ` · σxy ${L.sigma_xy} m, σyaw ${L.sigma_yaw} rad` : '');
+  $('robot-pose').textContent = S.pose ? `x ${S.pose.x}, y ${S.pose.y}, yaw ${S.pose.yaw}` : '— (no map → base_link TF)';
+  $('btn-stop').disabled = !S.mission.running;
+  document.querySelectorAll('button[data-start]').forEach((b) => (b.disabled = S.mission.running || !navOn || !L.localized));
+  document.querySelectorAll('button[data-pose]').forEach((b) => (b.disabled = !S.pose));
+  $('log-file').textContent = S.log_file ? `${S.log_file} · launch args: ${S.launch_args.join(' ')}` : '';
+  const pre = $('log'), atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+  pre.textContent = S.log.length ? S.log.join('\n') : '—';
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+  renderFlow();
+  renderStateMachine();
+  drawMap();
+}
+
+// ---------- missions list ----------
+function renderMissions() {
+  const list = $('missions'); list.replaceChildren();
+  if (!missions.length) { list.append(el('div', 'empty', 'No missions yet. Press “+ New mission”.')); return; }
+  for (const m of missions) {
+    const card = el('div', 'mcard' + (m.name === selected ? ' selected' : ''));
+    const top = el('div', 'top'); top.append(el('strong', '', m.name), el('span', 'muted', base(m.map)));
+    card.append(top);
+    if (m.error) card.append(el('div', 'err', '⚠ ' + m.error));
+    else {
+      const chain = el('div', 'chain');
+      m.steps.forEach((s, i) => { if (i) chain.append(el('span', 'to', '→')); chain.append(el('span', 'p', s.policy)); });
+      card.append(chain);
+    }
+    const td = el('div', 'actions');
+    if (!m.error) {
+      const start = el('button', 'primary small', '▶ Start'); start.dataset.start = m.name;
+      start.setAttribute('aria-label', `Start mission ${m.name}`);
+      start.onclick = async () => {
+        if (!confirm(`Start "${m.name}" (${m.steps.length} step(s))? The robot will drive and move its arm.`)) return;
+        try { await api('/api/start', { name: m.name }); selected = m.name; say($('m-msg'), `Started ${m.name}`, true); renderMissions(); refreshStatus(); }
+        catch (e) { say($('m-msg'), e.message, false); }
+      };
+      td.append(start);
+    }
+    const draft = m.error ? m.draft : m;   // a broken mission (e.g. unknown policy) can still be opened and fixed
+    if (draft) {
+      const edit = el('button', 'small', 'Edit');
+      edit.setAttribute('aria-label', `Edit mission ${m.name}`);
+      edit.onclick = () => { selected = m.name; loadIntoForm(draft); renderMissions(); renderStateMachine();
+                             if (m.error) say($('f-msg'), `Fix and save: ${m.error}`, false);
+                             $('h-edit').scrollIntoView({ behavior: 'smooth' }); };
+      td.append(edit);
+    }
+    const del = el('button', 'small', 'Delete');
+    del.setAttribute('aria-label', `Delete mission ${m.name}`);
+    del.onclick = () => deleteMission(m.name);
+    td.append(del);
+    card.append(td);
+    card.onclick = (ev) => { if (ev.target.tagName !== 'BUTTON') { selected = m.name; renderMissions(); renderStateMachine(); drawMap(); } };
+    list.append(card);
+  }
+}
+async function refreshMissions() {
+  try { missions = await api('/api/missions'); renderMissions(); renderStateMachine(); }
+  catch (e) { say($('m-msg'), e.message, false); }
+}
+async function deleteMission(name) {
+  if (!confirm(`Delete mission "${name}"?`)) return;
+  try { await api('/api/missions/delete', { name }); if (selected === name) selected = null; refreshMissions(); }
+  catch (e) { say($('m-msg'), e.message, false); }
+}
+
+// ---------- editor ----------
+function addStep(step = {}) {
+  const policyNames = Object.keys(policies);
+  if (!step.goal && S?.pose) step = { ...step, goal: { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw } };  // new step: robot's pose
+  const box = el('div', 'step');
+  const head = el('div', 'step-head');
+  const title = el('strong', '', 'Step');
+  const tools = el('div', 'actions');
+  const btn = (text, label, fn) => { const b = el('button', 'small', text); b.type = 'button'; b.setAttribute('aria-label', label); b.onclick = fn; tools.append(b); };
+  btn('↑', 'Move step up', () => { box.previousElementSibling && box.parentNode.insertBefore(box, box.previousElementSibling); numberSteps(); });
+  btn('↓', 'Move step down', () => { box.nextElementSibling && box.parentNode.insertBefore(box.nextElementSibling, box); numberSteps(); });
+  btn('Remove', 'Remove step', () => { box.remove(); numberSteps(); });
+  head.append(title, tools);
+  const row = el('div', 'grid2');
+  const pol = el('select'); pol.className = 's-policy';
+  const unknown = step.policy && !(step.policy in policies) ? [[step.policy, `⚠ unknown: ${step.policy} (choose another)`]] : [];
+  options(pol, [...unknown, ...policyNames.map((n) => [n, `${n} — ${policies[n].task || ''}`])], step.policy || policyNames[0]);
+  const pose = el('select'); pose.className = 's-start-pose';
+  const info = el('div', 'muted');
+  const showInfo = (selectedPose) => { const c = policies[pol.value], names = c?.start_poses || [];
+    const missing = selectedPose && !names.includes(selectedPose) ? [[selectedPose, `⚠ missing: ${selectedPose}`]] : [];
+    options(pose, [...missing, ...names.map((n) => [n, n])], selectedPose || 'start_pose.json');
+    pose.disabled = !names.length;
+    info.textContent = c ? `dataset: ${c.root} · checkpoint (Jetson): ${c.ckpt}` : 'This policy is not in config/policies.yaml: choose another one.'; };
+  pol.onchange = () => showInfo('start_pose.json');
+  showInfo(step.start_pose || 'start_pose.json');
+  const lab = (text, input) => { const d = el('div'); const l = el('label', '', text); const id = 'i' + Math.random().toString(36).slice(2); input.id = id; l.htmlFor = id; d.append(l, input); return d; };
+  row.append(lab('Policy', pol), lab('Start pose JSON', pose));
+  const goal = el('div', 'grid3');
+  const num = (cls, v, step_) => { const i = el('input'); i.type = 'number'; i.step = step_; i.className = cls; i.value = v ?? 0; i.oninput = drawMap; return i; };
+  // step 0.0001: the browser accepts up to 4 decimals
+  const gx = num('g-x', step.goal?.x, '0.0001'), gy = num('g-y', step.goal?.y, '0.0001'), gyaw = num('g-yaw', step.goal?.yaw, '0.0001');
+  goal.append(lab('goal x (m)', gx), lab('goal y (m)', gy), lab('goal yaw (rad)', gyaw));
+  const use = el('button', 'small primary', '◎ Use robot pose as goal'); use.type = 'button'; use.dataset.pose = '1'; use.disabled = !S?.pose;
+  const ref = el('div', 'muted s-scan');
+  const showRef = () => (ref.textContent = box.dataset.scan
+    ? `✓ Lidar reference: ${box.dataset.scan}. On arrival the robot aligns to this exact spot (~1 cm).`
+    : 'No lidar reference: arrival is checked with AMCL only (~5-10 cm). Park the robot on the recorded spot and press the button.');
+  box.dataset.scan = step.scan || '';
+  showRef();
+  use.onclick = async () => {
+    use.disabled = true; use.textContent = 'Capturing lidar reference…';
+    try {
+      const r = await api('/api/capture', {});
+      gx.value = r.pose.x; gy.value = r.pose.y; gyaw.value = r.pose.yaw; box.dataset.scan = r.scan;
+      say($('f-msg'), `Goal + lidar reference saved (${r.points} points). Save the mission to keep it.`, true);
+    } catch (e) {
+      say($('f-msg'), 'No lidar reference: ' + e.message, false);
+      if (S?.pose) { gx.value = S.pose.x; gy.value = S.pose.y; gyaw.value = S.pose.yaw; box.dataset.scan = ''; }
+    } finally { use.disabled = !S?.pose; use.textContent = '◎ Use robot pose as goal'; showRef(); drawMap(); }
+  };
+  box.append(head, row, info, el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref);
+  $('steps').append(box);
+  numberSteps();
+}
+function numberSteps() {
+  [...$('steps').children].forEach((box, i) => { const t = box.querySelector('strong'); t.textContent = `Step ${i + 1}`; t.dataset.n = i + 1; });
+  drawMap();
+}
+function formSteps() {
+  return [...$('steps').children].map((box) => ({
+    policy: box.querySelector('.s-policy').value,
+    start_pose: box.querySelector('.s-start-pose').value,
+    scan: box.dataset.scan || '',
+    goal: { x: parseFloat(box.querySelector('.g-x').value), y: parseFloat(box.querySelector('.g-y').value),
+            yaw: parseFloat(box.querySelector('.g-yaw').value) } }));
+}
+function loadIntoForm(m) {
+  formTouched = !!m;
+  $('f-name').value = m ? m.name : '';
+  if (m) $('f-map').value = m.map; else if (S?.nav?.map) $('f-map').value = S.nav.map;
+  $('steps').replaceChildren();
+  (m ? m.steps : [{}]).forEach(addStep);
+  $('f-name').focus({ preventScroll: true });
+  drawMap();
+}
+$('btn-add-step').onclick = () => addStep();
+$('btn-new').onclick = () => { selected = null; loadIntoForm(null); renderMissions(); renderStateMachine(); $('h-edit').scrollIntoView({ behavior: 'smooth' }); };
+$('f-map').onchange = () => { formTouched = true; drawMap(); };
+$('form').addEventListener('input', () => (formTouched = true));
+$('form').onsubmit = async (ev) => {
+  ev.preventDefault();
+  if (!ev.target.reportValidity()) return;
+  const body = { name: $('f-name').value, map: $('f-map').value, steps: formSteps() };
+  if (!body.steps.length) return say($('f-msg'), 'Add at least one step', false);
+  if (missions.some((m) => m.name === body.name) && !confirm(`Overwrite mission "${body.name}"?`)) return;
+  try { const r = await api('/api/missions', body); selected = r.saved; say($('f-msg'), `Saved ${r.saved}`, true); refreshMissions(); }
+  catch (e) { say($('f-msg'), e.message, false); }
+};
+
+// ---------- robot processes ----------
+function renderComponents() {
+  const list = $('components'); list.replaceChildren();
+  for (const c of S.components) {
+    const row = el('div', 'comp-row');
+    const name = el('div');
+    const dot = el('span', 'dot ' + (c.ready ? 'ok' : c.on || c.busy ? 'wait' : /^(exited|did not)/.test(c.state) ? 'bad' : ''));
+    dot.setAttribute('aria-hidden', 'true');
+    name.append(dot, el('strong', '', c.label), el('div', 'muted', c.desc));
+    // one switch, showing the real state: ON whenever the part runs, whoever started it (UI or a terminal)
+    const sw = el('button', 'switch' + (c.on && !c.ready ? ' wait' : ''), c.busy ? '…' : c.on ? 'ON' : 'OFF');
+    sw.setAttribute('aria-pressed', String(c.on));
+    sw.setAttribute('aria-label', `${c.label}: ${c.on ? 'on, press to stop' : 'off, press to start'}`);
+    sw.disabled = c.busy || (c.on ? !c.stoppable || S.mission.running : !c.startable);
+    sw.onclick = async () => {
+      if (c.on) {
+        const who = c.owner === 'terminal' ? ' It was started from a terminal; that terminal will see it stop.' : '';
+        if (!confirm(`Stop ${c.label}?${who}\n(Ctrl-C first; SIGTERM, then SIGKILL, only if it does not exit.)`)) return;
+      }
+      try {
+        const r = c.on ? await api('/api/component/stop', { name: c.name })
+                       : await api('/api/component/start', { name: c.name, map: $('nav-map').value });
+        say($('nav-msg'), r.message, true); refreshStatus();
+      } catch (e) { say($('nav-msg'), e.message, false); }
+    };
+    row.append(name, sw, el('div', 'state', c.state));
+    list.append(row);
+  }
+}
+$('btn-nav-start').onclick = async () => {
+  try { const r = await api('/api/nav/start', { map: $('nav-map').value }); say($('nav-msg'), r.message + '. Wait for all green, then Localize.', true); refreshStatus(); }
+  catch (e) { say($('nav-msg'), e.message, false); }
+};
+$('btn-nav-stop').onclick = async () => {
+  const ext = S.components.filter((c) => c.on && c.owner === 'terminal').map((c) => c.label);
+  if (!confirm('Stop all robot processes?' + (ext.length ? `\nStarted from a terminal: ${ext.join(', ')}` : ''))) return;
+  try { const r = await api('/api/nav/stop', {}); say($('nav-msg'), r.message, true); }
+  catch (e) { say($('nav-msg'), e.message, false); }
+};
+$('btn-localize').onclick = async () => {
+  if (!confirm('Global localization makes the robot spin in place (up to 3 turns). Is the area around it clear?')) return;
+  try { await api('/api/localize', {}); say($('nav-msg'), 'Localizing…', true); }
+  catch (e) { say($('nav-msg'), e.message, false); }
+};
+$('btn-stop').onclick = async () => {
+  try { const r = await api('/api/stop', {}); say($('s-msg'), r.message, true); }
+  catch (e) { say($('s-msg'), e.message, false); }
+};
+$('nav-map').onchange = drawMap;
+$('log-which').onchange = refreshStatus;
+
+(async () => {
+  try {
+    [maps, policies] = await Promise.all([api('/api/maps'), api('/api/policies')]);
+  } catch (e) { say($('f-msg'), e.message, false); }
+  const config = await api('/api/config').catch(() => ({}));
+  const mapOpts = maps.map((p) => [p, base(p)]);
+  const preferred = maps.includes(config.default_map) ? config.default_map : undefined;
+  options($('nav-map'), mapOpts.length ? mapOpts : [['', 'No maps in maps_dir']], preferred);
+  options($('f-map'), mapOpts, preferred);
+  await refreshMissions();
+  await refreshStatus();  // first, so a new mission's first step starts at the robot's pose
+  loadIntoForm(null);
+  setInterval(refreshStatus, 1000);
+})();
+</script>
+</body>
+</html>

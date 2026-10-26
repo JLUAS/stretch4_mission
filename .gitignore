@@ -1,0 +1,38 @@
+# Editors and operating systems
+*~
+\#*\#
+.\#*
+*.swp
+*.swn
+*.swo
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
+.env
+.venv/
+env/
+venv/
+
+# ROS 2 / colcon
+build/
+install/
+log/
+
+# Generated documentation videos; regenerate them from docs/video/.
+docs/*.mp4
+docs/*.webm
+
+# Local mission data contains site-specific maps, poses, and lidar scans.
+missions/*.yaml
+missions/scans/
+!missions/README.md

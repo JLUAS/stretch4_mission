@@ -1,0 +1,47 @@
+# MuJoCo sim only: merged last onto stretch_nav2's own params (same order as navigation_mppi.launch.py).
+# The sim driver publishes odom -> base_footprint on /odom and listens on /stretch/cmd_vel;
+# the real stretch_driver uses wheel_odom and cmd_vel.
+#
+# The sim's /scan_filtered has no robot self-filter: every ray hits the robot's own body at 0.10-0.20 m
+# (inside the 0.225 m footprint), so the collision monitor would stop the robot forever. Ignore returns
+# under 0.25 m. In this sim, AMCL and the costmaps therefore see no real obstacles: it tests the mission
+# flow on odometry + static map, not obstacle avoidance or scan matching.
+amcl:
+  ros__parameters:
+    odom_frame_id: odom
+    laser_min_range: 0.25
+bt_navigator:
+  ros__parameters:
+    odom_topic: /odom
+controller_server:
+  ros__parameters:
+    progress_checker:
+      # MuJoCo runs ~0.2x real time on a laptop while Nav2 runs on wall time (like the sim driver),
+      # so 0.5 m in 10 s wall fails during the slow final rotation.
+      movement_time_allowance: 60.0
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      global_frame: odom
+      voxel_layer:
+        scan:
+          obstacle_min_range: 0.25
+          raytrace_min_range: 0.25
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      obstacle_layer:
+        scan:
+          obstacle_min_range: 0.25
+behavior_server:
+  ros__parameters:
+    local_frame: odom
+velocity_smoother:
+  ros__parameters:
+    odom_topic: odom
+collision_monitor:
+  ros__parameters:
+    odom_frame_id: odom
+    cmd_vel_out_topic: /stretch/cmd_vel
+    FootprintApproach:
+      enabled: false   # its only source is the self-hit scan (see above)

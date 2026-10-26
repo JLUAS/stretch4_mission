@@ -1,0 +1,4 @@
+{
+  "joints": {"lift": 0.95, "arm": 0.35, "wrist_yaw": 0.0, "wrist_pitch": 0.0, "wrist_roll": 0.0, "grip_mm": 50.0},
+  "source": "SIM stand-in for clean_table (sim_lerobot_bridge uses lift and arm)"
+}

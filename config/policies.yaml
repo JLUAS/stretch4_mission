@@ -1,0 +1,30 @@
+# Policy library: one entry per trained policy, run with stretch4_policy_recorder by policy_bridge.py:
+#   robot:  stretch4_goto_pose --root <root>            (start pose, from the policy's dataset)
+#   robot:  stretch4_policy_stream + stretch4_policy_exec
+#   Jetson: stretch4_policy_run --ckpt <ckpt> <run_args>
+# The mission sets these keys on the bridge at every step. Machine settings: config/policy_runner.yaml.
+policies:
+  grab_sponge:
+    task: Grab the sponge
+    root: ~/data/grab_sponge                 # on the robot
+    ckpt: ~/policies/grab_sponge.ckpt        # on the Jetson
+    run_args: --fp16 --base                  # --yes and --duration <max_runtime_sec> are always added
+    max_runtime_sec: 30.0                  # demos are 13-26 s; this policy has no learned done signal
+
+  clean_table:
+    task: Clean the table
+    root: ~/data/clean_table
+    ckpt: ~/policies/clean_table.ckpt        # expected on the Jetson after training
+    run_args: --fp16 --base
+    max_runtime_sec: 120.0
+
+  # Template for a new policy (it appears in the UI once it has root and ckpt):
+  # open_cabinet:
+  #   task: Open the cabinet
+  #   root: ~/data/open_cabinet
+  #   ckpt: ~/policies/open_cabinet.ckpt
+  #   run_args: --fp16 --base
+  #   max_runtime_sec: 120.0
+
+  # The blue-bottle policy ran on the previous LeRobot async-inference bridge, which this runner does not start.
+  # Train/export it for stretch4_policy_recorder to use it here again.

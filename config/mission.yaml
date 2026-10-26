@@ -1,0 +1,101 @@
+# Tuning for every mission (ROS parameters of the mission controller). What a mission does
+# (map + steps) is in missions/<name>.yaml; what a policy is, in config/policies.yaml.
+stretch4_mission_controller:
+  ros__parameters:
+    policies_file: ~/tec_workspace/stretch4_mission/config/policies.yaml
+
+    # Frames used by stretch_nav2 (original_nav2_params.yaml: global_frame map, robot_base_frame base_link)
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /wheel_odom          # published by stretch_driver
+
+    # Final pose required before a policy starts (checked after Nav2 succeeds and the base stops).
+    # Must stay looser than nav2_*_goal_tolerance below: AMCL keeps correcting after the stop.
+    xy_tolerance: 0.25
+    yaw_tolerance: 0.15              # rad (~8.6 deg)
+
+    # Set on controller_server (general_goal_checker) at runtime before each goal; stretch_nav2's
+    # default is xy 0.25 m / yaw 0.34 rad. Too tight and MPPI may oscillate until navigation_timeout.
+    nav2_goal_checker: general_goal_checker
+    nav2_xy_goal_tolerance: 0.10
+    nav2_yaw_goal_tolerance: 0.08
+
+    # Command-line runs only (the UI localizes with AMCL global localization before a mission):
+    # false = localize by hand with RViz "2D Pose Estimate"; true = publish this pose to /initialpose.
+    set_initial_pose: false
+    initial_x: 0.0
+    initial_y: 0.0
+    initial_yaw: 0.0
+
+    # "Stationary" = odom speeds below these for stationary_duration seconds
+    stationary_linear_speed: 0.01    # m/s
+    stationary_angular_speed: 0.02   # rad/s
+    stationary_duration: 1.0         # s
+
+    # Final alignment of steps that have a reference scan (captured with "Use robot pose as goal"):
+    # ICP between the live /scan_filtered and the reference, then slow omni-base moves on odometry, repeated
+    # until within tolerance. Fails (no policy) if the match is poor, the correction too large, or an obstacle
+    # comes closer than align_clearance to the base center. Steps without a scan use xy/yaw_tolerance above.
+    scan_topic: /scan_filtered
+    cmd_vel_topic: /cmd_vel           # stretch_driver (navigation mode); Nav2 is idle at this point
+    align_position_tolerance: 0.01    # m
+    align_yaw_tolerance: 0.01         # rad (~0.6 deg)
+    align_max_offset: 0.40            # m, refuse larger corrections (wrong match / wrong place)
+    align_max_yaw_offset: 0.50        # rad
+    align_min_inliers: 0.60           # fraction of live points matching the reference within 5 cm
+    align_max_iterations: 6
+    align_speed: 0.05                 # m/s
+    align_yaw_speed: 0.15             # rad/s
+    align_min_speed: 0.01             # m/s, below this the base may not move (dead zone)
+    align_min_yaw_speed: 0.03         # rad/s
+    align_clearance: 0.26             # m, closest lidar point allowed while aligning
+    align_move_timeout: 20.0          # s per correction move
+
+    trajectory_action: /follow_joint_trajectory   # robot stretch_driver (the MuJoCo sim uses /stretch_controller/...)
+    joint_states_topic: /joint_states
+
+    # Before every navigation: move the lift to 0.5 m, then retract the telescoping arm fully.
+    # The gripper is not commanded, so an object held by the previous policy stays held.
+    retract_arm_before_navigation: true
+    lift_joint: lift_joint
+    lift_retract_position: 0.5       # m, reached from above or below before arm retraction
+    lift_retract_tolerance: 0.01     # m
+    lift_retract_duration: 6.0       # s, trajectory time_from_start
+    arm_joint: arm_joint             # stretch_driver ArmCommandGroup name (the sim accepts it too)
+    arm_state_joints: [arm_l1_joint, arm_l2_joint, arm_l3_joint, arm_l4_joint]   # /joint_states names
+    arm_retracted_max: 0.02          # m
+    arm_retract_duration: 5.0        # s, trajectory time_from_start
+
+    # Then move only the wrist to this robot's SG4 stow orientation. Do not command the gripper.
+    wrist_yaw_joint: wrist_yaw_joint
+    wrist_roll_joint: wrist_roll_joint
+    wrist_pitch_joint: wrist_pitch_joint
+    wrist_yaw_stow_position: 3.14    # rad
+    wrist_roll_stow_position: 0.0    # rad
+    wrist_pitch_stow_position: 0.0   # rad
+    wrist_stow_tolerance: 0.03       # rad
+    wrist_stow_duration: 4.0         # s per joint, trajectory time_from_start
+
+    # Before every policy start: raise only the lift, so stretch4_goto_pose (the policy's start pose)
+    # comes down from above. The goal is clipped to the joint max (sim: 1.198 m);
+    # success = measured lift >= lift_min_height (set it above every policy's start-pose lift).
+    lift_before_policy: true
+    lift_up_position: 1.2            # m, commanded
+    lift_min_height: 1.16            # m, required measured height
+    lift_up_duration: 10.0           # s, trajectory time_from_start
+
+    bridge_node: /stretch4_policy_bridge    # policy_bridge.py; the mission sets each step's policy params here
+    start_service: /policy/start
+    stop_service: /policy/stop
+    status_service: /policy/status
+
+    # Timeouts, seconds (per step where it applies)
+    nav2_ready_timeout: 120.0
+    localization_timeout: 120.0
+    navigation_timeout: 300.0
+    stationary_timeout: 20.0
+    arm_timeout: 30.0
+    lift_timeout: 30.0
+    policy_start_timeout: 150.0      # > goto_timeout (policy_runner.yaml) + start_delay + a few s
+    policy_timeout: 300.0            # keep > every policy's max_runtime_sec (the bridge stops the policy then)
+    status_period: 2.0

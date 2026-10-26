@@ -1,0 +1,13 @@
+# Machine settings for policy_bridge.py (stretch4_policy_recorder). Per-policy settings: config/policies.yaml.
+# Check these once on the robot before the first run (see README, "Policy runner").
+stretch4_policy_bridge:
+  ros__parameters:
+    robot_repo: ~/repos/stretch4_policy_recorder      # has .venv with stretch4_goto_pose / _policy_stream / _policy_exec
+    goto_extra_args: ''           # extra stretch4_goto_pose arguments (--yes is always added), e.g. --no-gripper
+    goto_timeout: 120.0           # s
+    jetson_host: jetson1@192.168.1.101                # ssh from the robot (key login, checked 2026-10-26)
+    jetson_repo: ~/repos/stretch4_policy_recorder     # on the Jetson, has .venv with stretch4_policy_run
+    ssh_options: ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5']
+    start_delay: 3.0              # s between starting stream/exec and the Jetson run
+    stop_timeout: 10.0            # s per stop stage (Ctrl-C, then SIGTERM)
+    log_dir: ~/.ros/stretch4_mission
