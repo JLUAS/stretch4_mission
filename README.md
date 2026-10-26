@@ -93,9 +93,15 @@ example `-p host:=0.0.0.0` serves the whole network at `http://<robot-ip>:8090`,
    Green = ready, yellow = started but not responding yet. A part already running outside the UI shows as
    "started outside the UI", and the UI will not start a second copy. Stop buttons send Ctrl-C; they are disabled
    while a mission runs. Each part has its own log (selector at the bottom).
+
+   ![Step 1: choose a map and start the robot services](docs/ui/01-start-services.png)
+
 2. **Localize (global):** AMCL spreads its guesses over the whole map. The robot rotates in place (Nav2 `spin`,
    collision-checked, up to 3 turns) until the estimate converges (σxy ≤ 0.25 m, σyaw ≤ 0.30 rad). Check that the
    blue robot on the map is where the real robot is; in rooms that look alike AMCL can converge to the wrong place.
+
+   ![Step 2: global localization controls and status](docs/ui/02-localize.png)
+
 3. **Create a mission:**
    1. Click **+ New mission**, give it a name and pick the map.
    2. For each policy, **+ Add policy step** and pick the policy. Its start pose is the policy's dataset (`root`).
@@ -104,9 +110,14 @@ example `-p host:=0.0.0.0` serves the whole network at `http://<robot-ip>:8090`,
       that spot (`missions/scans/`, median of 1 s of `/scan_filtered`). Goals appear as numbered arrows on the map;
       the step says whether it has a lidar reference.
    4. Reorder steps with ↑ ↓, then **Save mission**.
+
+   ![Step 3: configure policies, start poses, and navigation goals](docs/ui/03-edit-mission.png)
+
 4. **Start** the mission. The state machine shows every step and phase live: pending, active (blue), done (green),
    skipped (crossed out, e.g. navigation when already in place) and failed (red). **Stop mission** sends Ctrl-C; the
    mission cancels whatever it was doing. Navigation keeps running, so you can start another mission.
+
+   ![Step 4: select a mission and follow its state machine](docs/ui/04-run-mission.png)
 
 A mission only starts when Nav2 (started from the UI) runs on **its** map, the driver, lidars and bridge are
 ready, and the robot is localized. The UI says which part is missing.
