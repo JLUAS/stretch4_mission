@@ -90,7 +90,7 @@ class MissionTrace:
 class MissionController(BasicNavigator):
     PARAMS = {
         'mission_file': '',
-        'policies_file': '~/tec_workspace/stretch4_mission/config/policies.yaml',
+        'policies_file': '~/ament_ws/src/stretch4_mission/config/policies.yaml',
         'global_frame': 'map',
         'robot_base_frame': 'base_link',
         'odom_topic': '/wheel_odom',
@@ -235,7 +235,7 @@ class MissionController(BasicNavigator):
     def make_pose(self, x, y, yaw):
         pose = PoseStamped()
         pose.header.frame_id = self.p['global_frame']
-        # stamp 0 = "latest TF": works with wall time (robot) and sim time alike
+        # stamp 0 requests the latest available TF
         pose.pose.position.x = float(x)
         pose.pose.position.y = float(y)
         q = quaternion_from_euler(0.0, 0.0, float(yaw))
@@ -358,8 +358,8 @@ class MissionController(BasicNavigator):
 
         Not on the action result: stretch_driver only finishes a goal after the joint has *started* moving
         (stretch_core command_groups is_finished), so a goal at the current position (arm already retracted,
-        lift already at its clipped max) never finishes until the driver's action_timeout. And the MuJoCo sim
-        reports SUCCEEDED before the joint moves. So: skip when already there, succeed as soon as the joint is,
+        lift already at its clipped max) never finishes until the driver's action_timeout. So: skip when already
+        there, succeed as soon as the joint is,
         cancel whatever the driver is still tracking, and fail at once only if the driver aborts with an error.
         """
         value = self.settled(measure)

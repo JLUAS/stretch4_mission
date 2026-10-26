@@ -11,7 +11,6 @@ export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 set +u
 source /opt/ros/jazzy/setup.bash
 source /home/hello-robot/ament_ws/install/setup.bash
-source /home/hello-robot/tec_workspace/install/setup.bash
 exec ros2 run stretch4_mission mission_ui --ros-args \
   -p maps_dir:=$HELLO_FLEET_PATH/maps \
   -p default_map:=$HELLO_FLEET_PATH/maps/test.yaml \

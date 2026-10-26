@@ -2,7 +2,7 @@
 # (map + steps) is in missions/<name>.yaml; what a policy is, in config/policies.yaml.
 stretch4_mission_controller:
   ros__parameters:
-    policies_file: ~/tec_workspace/stretch4_mission/config/policies.yaml
+    policies_file: ~/ament_ws/src/stretch4_mission/config/policies.yaml
 
     # Frames used by stretch_nav2 (original_nav2_params.yaml: global_frame map, robot_base_frame base_link)
     global_frame: map
@@ -51,7 +51,7 @@ stretch4_mission_controller:
     align_clearance: 0.26             # m, closest lidar point allowed while aligning
     align_move_timeout: 20.0          # s per correction move
 
-    trajectory_action: /follow_joint_trajectory   # robot stretch_driver (the MuJoCo sim uses /stretch_controller/...)
+    trajectory_action: /follow_joint_trajectory
     joint_states_topic: /joint_states
 
     # Before every navigation: move the lift to 0.5 m, then retract the telescoping arm fully.
@@ -61,7 +61,7 @@ stretch4_mission_controller:
     lift_retract_position: 0.5       # m, reached from above or below before arm retraction
     lift_retract_tolerance: 0.01     # m
     lift_retract_duration: 6.0       # s, trajectory time_from_start
-    arm_joint: arm_joint             # stretch_driver ArmCommandGroup name (the sim accepts it too)
+    arm_joint: arm_joint             # stretch_driver ArmCommandGroup name
     arm_state_joints: [arm_l1_joint, arm_l2_joint, arm_l3_joint, arm_l4_joint]   # /joint_states names
     arm_retracted_max: 0.02          # m
     arm_retract_duration: 5.0        # s, trajectory time_from_start
@@ -77,7 +77,7 @@ stretch4_mission_controller:
     wrist_stow_duration: 4.0         # s per joint, trajectory time_from_start
 
     # Before every policy start: raise only the lift, so stretch4_goto_pose (the policy's start pose)
-    # comes down from above. The goal is clipped to the joint max (sim: 1.198 m);
+    # comes down from above. The goal is clipped to the joint max;
     # success = measured lift >= lift_min_height (set it above every policy's start-pose lift).
     lift_before_policy: true
     lift_up_position: 1.2            # m, commanded

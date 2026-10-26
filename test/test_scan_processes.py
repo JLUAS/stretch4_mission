@@ -11,7 +11,7 @@ def sleeper(*argv):
 
 
 def test_scan_finds_parts_by_command_line_and_skips_launch_wrappers():
-    bridge = sleeper('/home/x/tec_workspace/install/stretch4_mission/lib/stretch4_mission/policy_bridge')
+    bridge = sleeper('/home/x/ament_ws/install/stretch4_mission/lib/stretch4_mission/policy_bridge')
     wrapper = sleeper('ros2 run', 'stretch4_mission', 'lib/stretch4_mission/policy_bridge')   # a wrapper, not the node
     rsp = sleeper('/opt/ros/jazzy/lib/robot_state_publisher/robot_state_publisher')
     try:

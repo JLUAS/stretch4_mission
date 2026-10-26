@@ -65,10 +65,7 @@ def test_load_policies_defaults_types_and_required(tmp_path):
             load_policies(f)
 
 
-def test_shipped_libraries_load():
+def test_shipped_policy_library_loads():
     from pathlib import Path
     root = Path(__file__).parents[1]
     assert load_policies(root / 'config' / 'policies.yaml')['grab_sponge']['run_args'] == '--fp16 --base'
-    sim = load_policies(root / 'config' / 'sim_policies.yaml')
-    assert len(sim) == 3 and all((Path(p['root'].replace('~/tec_workspace/stretch4_mission', str(root))) /
-                                  'start_pose.json').is_file() for p in sim.values())

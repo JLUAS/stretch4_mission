@@ -2,8 +2,7 @@
 
 Multi-policy missions for Stretch 4 (ROS 2 Jazzy, `rmw_zenoh_cpp`), with a web UI.
 
-> This is an independent project. It is not affiliated with or endorsed by Hello Robot, and it does not use
-> Hello Robot logos. It integrates with the official Stretch 4 ROS 2 packages through their public interfaces.
+![Stretch 4 Missions web UI](ui.png)
 
 A **mission** is a map plus ordered **steps**. Each step is one trained policy (run with
 `stretch4_policy_recorder`) with a navigation goal; the start pose comes from the policy's dataset. Example "clean the table": open cabinet → pick sponge → clean table. For each step the robot does:
@@ -15,12 +14,10 @@ A **mission** is a map plus ordered **steps**. Each step is one trained policy (
 
 ```text
 .github/                 Pull-request guidance
-config/                  Mission, policy-runner, and simulation configuration
-docs/                    Project media and its generation sources
+config/                  Mission and policy-runner configuration
 launch/                  ROS 2 launch files
 missions/                Local robot missions (ignored by Git)
 scripts/                 Operator entry points
-sim_missions/            Portable MuJoCo mission examples
 stretch4_mission/        Python package and web UI
 test/                    Pytest suite
 ```
@@ -42,7 +39,6 @@ test/                    Pytest suite
 | `missions/<name>.yaml` | Missions (`name`, `map`, `steps: [{policy, start_pose, goal: {x, y, yaw}, scan}]`). Written by the UI. `start_pose` is a JSON file in the policy root; `scan` is the step's lidar reference (`missions/scans/`). |
 | `config/mission.yaml` | Tuning for all missions: tolerances, joints, lift height, timeouts. |
 | `config/policy_runner.yaml` | Policy runner machine settings: robot repo, Jetson host (`jetson1@192.168.1.101`), Jetson repo, ssh options, timeouts. |
-| `sim_missions/`, `config/sim_*` | MuJoCo sim only. |
 
 ## One-time setup on the robot
 
@@ -55,11 +51,15 @@ test/                    Pytest suite
 3. **Add each policy** to `config/policies.yaml` (copy the template at the bottom of the file).
 4. **Build:**
    ```bash
-   source /opt/ros/jazzy/setup.bash && source ~/ament_ws/install/setup.bash
-   cd ~/tec_workspace && colcon build --packages-select stretch4_mission
+   cd ~/ament_ws/src
+   git clone git@github.com:JLUAS/stretch4_mission.git
+   cd ~/ament_ws
+   source /opt/ros/jazzy/setup.bash
+   colcon build --packages-select stretch4_mission
+   source install/setup.bash
    ```
    The install is a copy, so rebuild after code changes. Policies, missions and `config/mission.yaml` are read from
-   `~/tec_workspace/stretch4_mission/`, so editing them needs no rebuild (`mission.yaml` only when started via
+   `~/ament_ws/src/stretch4_mission/`, so editing them needs no rebuild (`mission.yaml` only when started via
    `ros2 launch` without `mission_config:=`).
 
 ## Use the web UI
@@ -72,7 +72,7 @@ Before you start:
 On the robot (it loads the same environment as `~/.bashrc`, so it also works from a plain `ssh` command):
 
 ```bash
-~/tec_workspace/stretch4_mission/scripts/run_ui_robot.sh
+~/ament_ws/src/stretch4_mission/scripts/run_ui_robot.sh
 ```
 
 The UI listens only on the robot itself (`127.0.0.1:8090`). From your computer, open an SSH tunnel and then
@@ -116,13 +116,13 @@ The UI has no login: anyone who can reach port 8090 can move the robot. Use it o
 ## Command line (no UI)
 
 ```bash
-ros2 launch stretch4_mission mission.launch.py mission_file:=$HOME/tec_workspace/stretch4_mission/missions/<name>.yaml
+ros2 launch stretch4_mission mission.launch.py mission_file:=$HOME/ament_ws/src/stretch4_mission/missions/<name>.yaml
 ```
 
 This starts navigation on the mission's map plus the bridge, then the mission. Localize with RViz
 **2D Pose Estimate**, or set `set_initial_pose` in `config/mission.yaml`. Use `navigation:=false` when a navigation
 session (for example the UI's) is already running. Other arguments: `mission_config`, `policies_file`, `map`,
-`use_rviz`, `launch_driver`, `launch_bridge`, `bridge_script`, `sim`.
+`use_rviz`, `launch_driver`, `launch_bridge`, `policy_runner`.
 
 ## What happens between and inside steps
 
@@ -180,46 +180,8 @@ covers it.
 
 ROS services are not a safety system. Keep the physical stop within reach.
 
-## Simulation (MuJoCo, on a PC)
-
-Uses the `stretch4-jazzy-sim:local` image with `~/tec_workspace` mounted at `/root/tec_workspace`.
-
-```bash
-docker run -d --rm --name stretch4-mission-sim --runtime=nvidia --network host --ipc host \
-  -e MUJOCO_GL=egl -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST -e ROS_DOMAIN_ID=57 \
-  -v $HOME/tec_workspace:/root/tec_workspace stretch4-jazzy-sim:local \
-  bash -lc 'ros2 launch stretch_simulation stretch_mujoco_driver.launch.py mode:=navigation use_mujoco_viewer:=false use_rviz:=false'
-docker exec stretch4-mission-sim bash -lc 'source ~/ament_ws/install/setup.bash && cd /root && \
-  colcon --log-base /root/mlog build --base-paths /root/tec_workspace/stretch4_mission --build-base /root/mbuild --install-base /root/minstall'
-docker exec -it stretch4-mission-sim bash -lc 'source ~/ament_ws/install/setup.bash && source /root/minstall/setup.bash && \
-  export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ROS_DOMAIN_ID=57 T=/root/tec_workspace/stretch4_mission && \
-  ros2 run stretch4_mission mission_ui --ros-args -p maps_dir:=/root/ament_ws/src/stretch4_ros2/stretch_simulation/maps \
-  -p missions_dir:=$T/sim_missions -p policies_file:=$T/config/sim_policies.yaml \
-  -p sim_localize_from_odom:=true -p trajectory_action:=/stretch_controller/follow_joint_trajectory \
-  -p "launch_args:=[sim:=true, use_rviz:=false]"'
-```
-
-Then open http://localhost:8090, start navigation on `mujoco_open_world_table.yaml`, press Localize, and start
-`sim_clean_table` (3 stand-in policies).
-
-Sim differences (only with `sim:=true` / the sim parameters):
-- The robot's `navigation_mppi.launch.py` needs real robot params for its lidar self-filter. The sim uses the same
-  Nav2 core and param files plus `config/sim_nav2_overrides.yaml`: the `odom` frame and `/odom` instead of
-  `wheel_odom`, and `/stretch/cmd_vel`. Everything runs on wall time, because the sim driver stamps with its
-  wall-clock time.
-- The sim lidar has no self-filter: every ray hits the robot's own body at 0.10–0.20 m. Returns under 0.25 m are
-  ignored and the collision monitor's polygon is off. **Nav2 sees no real obstacles, AMCL runs on odometry only, and
-  global localization cannot converge.** So `sim_localize_from_odom` makes Localize publish the sim's odometry
-  pose, which is exact and starts at the map origin. AMCL's uncertainty grows while the robot drives, so press
-  Localize again before the next mission.
-- `sim_policy_bridge` replaces the policy bridge. It has the same node name, services, status strings and
-  parameters. `start` moves the lift and arm to the pose JSON selected by the mission step, then reports `RUNNING`
-  for `max_runtime_sec`.
-- MuJoCo runs at about 0.2× real time on a laptop. The sim gives the Nav2 progress checker 60 s and raises the
-  mission timeouts. A 3-step mission takes several minutes.
-
 ## Test
 
 ```bash
-cd ~/tec_workspace && colcon test --packages-select stretch4_mission && colcon test-result --verbose
+cd ~/ament_ws && colcon test --packages-select stretch4_mission && colcon test-result --verbose
 ```

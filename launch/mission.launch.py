@@ -17,7 +17,6 @@ def launch_setup(context):
     mission_file = os.path.expanduser(LaunchConfiguration('mission_file').perform(context))
     if not mission_file:
         raise RuntimeError('mission_file:=<missions/name.yaml> is required')
-    sim = LaunchConfiguration('sim').perform(context) == 'true'
     actions = []
 
     if LaunchConfiguration('navigation').perform(context) == 'true':
@@ -29,7 +28,6 @@ def launch_setup(context):
             PathJoinSubstitution([FindPackageShare('stretch4_mission'), 'launch', 'navigation.launch.py']),
             launch_arguments={
                 'map': map_path,
-                'sim': LaunchConfiguration('sim'),
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'driver': LaunchConfiguration('launch_driver'),
                 'lidar': 'true',
@@ -43,13 +41,6 @@ def launch_setup(context):
     policies = LaunchConfiguration('policies_file').perform(context)
     if policies:
         overrides['policies_file'] = policies
-    if sim:
-        # MuJoCo runs ~0.2x real time on a laptop and the timeouts are wall-clock: scale the slow steps.
-        # The sim driver serves the trajectory action under /stretch_controller/ (the robot driver: /follow_joint_trajectory).
-        overrides.update({'odom_topic': '/odom', 'trajectory_action': '/stretch_controller/follow_joint_trajectory',
-                          'cmd_vel_topic': '/stretch/cmd_vel',
-                          'navigation_timeout': 900.0, 'stationary_timeout': 60.0,
-                          'arm_timeout': 150.0, 'lift_timeout': 150.0})
     actions.append(Node(
         package='stretch4_mission',
         executable='mission_controller',
@@ -74,7 +65,6 @@ def generate_launch_description():
         DeclareLaunchArgument('use_rviz', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('launch_driver', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('launch_bridge', default_value='true', choices=['true', 'false']),
-        DeclareLaunchArgument('policy_runner', default_value='~/tec_workspace/stretch4_mission/config/policy_runner.yaml'),
-        DeclareLaunchArgument('sim', default_value='false', choices=['true', 'false']),
+        DeclareLaunchArgument('policy_runner', default_value='~/ament_ws/src/stretch4_mission/config/policy_runner.yaml'),
         OpaqueFunction(function=launch_setup),
     ])

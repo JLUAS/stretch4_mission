@@ -10,7 +10,7 @@ Use Ubuntu 24.04 with ROS 2 Jazzy and a workspace that already contains the Stre
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/ament_ws/install/setup.bash
-cd ~/tec_workspace
+cd ~/ament_ws
 colcon build --packages-select stretch4_mission
 source install/setup.bash
 ```
@@ -20,7 +20,7 @@ source install/setup.bash
 Run the package tests before opening a pull request:
 
 ```bash
-cd ~/tec_workspace/stretch4_mission
+cd ~/ament_ws/src/stretch4_mission
 python3 -m pytest -q
 ```
 
@@ -36,7 +36,7 @@ For changes to launch files, packaging, or ROS dependencies, also rebuild the pa
 
 ## Robot safety
 
-Prefer unit tests and simulation before hardware testing. State explicitly when a change was only statically tested
-or simulated. Hardware tests must keep the physical stop accessible and must not bypass joint limits, collision
+Prefer unit tests before hardware testing. State explicitly when a change was only statically tested.
+Hardware tests must keep the physical stop accessible and must not bypass joint limits, collision
 checks, watchdogs, or other safety mechanisms.
 

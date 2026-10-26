@@ -46,7 +46,6 @@ COMPONENTS = [('driver', 'Robot driver', 'stretch_driver, navigation mode'),
               ('lidar', 'Lidars', 'dual Hesai, /scan_filtered, footprint'),
               ('nav2', 'Nav2', 'map, AMCL, planner, controller'),
               ('bridge', 'Policy bridge', 'stretch4_policy_recorder: goto, stream, exec, Jetson run')]
-SIM_PROVIDED = ('driver', 'lidar')  # with sim:=true the MuJoCo driver provides these
 # Command-line fragments that identify each part's processes, whoever started them (UI or a terminal).
 # 'detect' decides ON/OFF; 'stop' adds companions that should go down with it.
 PROCESS_PATTERNS = {
@@ -54,7 +53,7 @@ PROCESS_PATTERNS = {
     'lidar': {'detect': ('hesai_ros_driver_node', 'dual_lidar_laserscan', 'robot_footprint_publisher'), 'stop': ()},
     'nav2': {'detect': ('__node:=nav2_container', 'lib/nav2_amcl/amcl', 'lib/nav2_map_server/map_server',
                         'lib/nav2_bt_navigator/bt_navigator', 'lib/nav2_controller/controller_server'), 'stop': ()},
-    'bridge': {'detect': ('lib/stretch4_mission/policy_bridge', 'lib/stretch4_mission/sim_policy_bridge'), 'stop': ()},
+    'bridge': {'detect': ('lib/stretch4_mission/policy_bridge',), 'stop': ()},
 }
 
 
@@ -138,22 +137,18 @@ class MissionUI(Node):
 
         def param(name, default):
             return self.declare_parameter(name, default).value
-        self.missions_dir = Path(os.path.expanduser(param('missions_dir', '~/tec_workspace/stretch4_mission/missions')))
+        self.missions_dir = Path(os.path.expanduser(param('missions_dir', '~/ament_ws/src/stretch4_mission/missions')))
         self.maps_dir = os.path.expanduser(param('maps_dir', f'{fleet}/maps'))
         self.policies_file = os.path.expanduser(
-            param('policies_file', '~/tec_workspace/stretch4_mission/config/policies.yaml'))
+            param('policies_file', '~/ament_ws/src/stretch4_mission/config/policies.yaml'))
         self.launch_args = list(param('launch_args', ['use_rviz:=true']))
         # 127.0.0.1: reach it through an SSH tunnel (no login on this page); 0.0.0.0 to serve the whole network
         self.host, self.port = param('host', '127.0.0.1'), param('port', 8090)
         self.default_map = os.path.expanduser(param('default_map', ''))
-        # Sim only: the sim lidar sees just the robot's own body, so global localization cannot converge.
-        # True makes Localize publish the sim's odometry pose (exact, and odom starts at the map origin).
-        self.sim_localize_from_odom = param('sim_localize_from_odom', False)
         self.localize_spins = param('localize_spins', 3)
         self.localized_sigma_xy = param('localized_sigma_xy', 0.25)
         self.localized_sigma_yaw = param('localized_sigma_yaw', 0.30)
         self.trajectory_action = param('trajectory_action', '/follow_joint_trajectory')
-        self.sim = 'sim:=true' in self.launch_args
         log_dir = Path(os.path.expanduser('~/.ros/stretch4_mission'))
         self.missions_dir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -355,9 +350,7 @@ class MissionUI(Node):
         mine = proc.running()
         on = mine or bool(pids) or ok
         owner = 'ui' if mine else ('terminal' if on else None)
-        if self.sim and name in SIM_PROVIDED:
-            state = 'ready (simulator)' if ok else 'waiting for the simulator'
-        elif name in self.stopping:
+        if name in self.stopping:
             state = self.stopping[name]
         elif on:
             state = ('ready' if ok else 'starting… (not responding yet)') + (' · started from a terminal' if owner == 'terminal' else '')
@@ -365,10 +358,9 @@ class MissionUI(Node):
             rc = proc.info()['returncode']
             # 0 / -2 / 130: ended normally or by our Ctrl-C
             state = self.stop_notes.get(name) or ('stopped' if rc in (None, 0, -2, 130) else f'exited (code {rc}), see its log')
-        fixed = self.sim and name in SIM_PROVIDED
         return {'name': name, 'on': on, 'ready': ok, 'owner': owner, 'state': state, 'busy': name in self.stopping,
-                'running': mine, 'startable': not fixed and not on and name not in self.stopping,
-                'stoppable': not fixed and on and name not in self.stopping}
+                'running': mine, 'startable': not on and name not in self.stopping,
+                'stoppable': on and name not in self.stopping}
 
     def start_component(self, name, map_path=None):
         with self.lock:
@@ -377,8 +369,6 @@ class MissionUI(Node):
     def _start_component(self, name, map_path):
         if name not in self.procs:
             raise ValueError(f'Unknown component {name!r}')
-        if self.sim and name in SIM_PROVIDED:
-            raise RuntimeError(f'{name}: provided by the simulator')
         if name in self.stopping:
             raise RuntimeError(f'{name} is still stopping')
         if self.procs[name].running() or self.processes().get(name) or self.healthy(name):
@@ -479,16 +469,6 @@ class MissionUI(Node):
 
     def _localize(self):
         try:
-            if self.sim_localize_from_odom:
-                try:
-                    t = self.tf_buffer.lookup_transform('odom', 'base_link', Time()).transform
-                except TransformException as exc:
-                    raise RuntimeError(f'no odom -> base_link TF: {exc}') from None
-                r = t.rotation
-                pose = (t.translation.x, t.translation.y, euler_from_quaternion([r.x, r.y, r.z, r.w])[2])
-                self._publish_initial_pose(*pose)
-                self.localize_text = 'SIM: published the odometry pose ({:.2f}, {:.2f}, {:.2f})'.format(*pose)
-                return
             self.localize_text = 'Global localization: spreading AMCL particles over the map'
             self._call(self.global_loc, 'reinitialize_global_localization')
             for i in range(self.localize_spins):
