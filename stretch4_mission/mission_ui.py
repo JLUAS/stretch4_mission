@@ -36,7 +36,7 @@ from std_srvs.srv import Empty, Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
-from stretch4_mission.mission_file import NAME_RE, POSE_RE, load_policies, validate_mission
+from stretch4_mission.mission_file import AUTO, NAME_RE, POSE_RE, load_policies, longest_episode_sec, validate_mission
 from stretch4_mission.scan_align import base_points
 
 INDEX_HTML = Path(__file__).with_name('web') / 'index.html'
@@ -216,6 +216,18 @@ class MissionUI(Node):
     def policy_start_poses(policy):
         root = Path(os.path.expanduser(policy['root']))
         return sorted(p.name for p in root.glob('*.json') if p.is_file() and POSE_RE.match(p.name))
+
+    @staticmethod
+    def policy_runtime(policy):
+        """How long the bridge lets this policy run: fixed max_runtime_sec, or longest recording + margin (auto)."""
+        if policy['max_runtime_sec'] != AUTO:
+            return {'sec': policy['max_runtime_sec'], 'note': 'fixed max_runtime_sec'}
+        try:
+            longest = longest_episode_sec(policy['root'])
+        except ValueError as exc:
+            return {'sec': None, 'note': str(exc)}
+        return {'sec': longest + policy['runtime_margin_sec'],
+                'note': f"longest recording {longest:.1f} s + {policy['runtime_margin_sec']:g} s"}
 
     def map_meta(self, path):
         if path not in self.maps():
@@ -622,7 +634,7 @@ def make_handler(ui):
                     return self._send(200, {'default_map': ui.default_map})
                 if url.path == '/api/policies':
                     return self._send(200, {k: {'task': v['task'], 'root': v['root'], 'ckpt': v['ckpt'],
-                                                'start_poses': ui.policy_start_poses(v)}
+                                                'start_poses': ui.policy_start_poses(v), 'runtime': ui.policy_runtime(v)}
                                             for k, v in ui.policies().items()})
                 if url.path == '/api/map_meta':
                     meta, _ = ui.map_meta(q.get('path', ''))

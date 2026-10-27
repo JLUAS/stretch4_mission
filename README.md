@@ -35,8 +35,8 @@ test/                    Pytest suite
 
 | File | What |
 |---|---|
-| `config/policies.yaml` | Policy library. Each entry: `task`, `root` (robot: dataset folder containing selectable pose JSON files), `ckpt` (Jetson: checkpoint), `run_args` (e.g. `--fp16 --base`), `max_runtime_sec`. **Add your policies here.** |
-| `missions/<name>.yaml` | Missions (`name`, `map`, `steps: [{policy, start_pose, goal: {x, y, yaw}, scan}]`). Written by the UI. `start_pose` is a JSON file in the policy root; `scan` is the step's lidar reference (`missions/scans/`). |
+| `config/policies.yaml` | Policy library. Each entry: `task`, `root` (robot: dataset folder containing selectable pose JSON files), `ckpt` (Jetson: checkpoint), `run_args` (e.g. `--fp16 --base`), `max_runtime_sec` (seconds, or `auto`; see [Policy run time](#policy-run-time)), optional `runtime_margin_sec`. Top-level `runtime_margin_sec`: the margin `auto` adds unless a policy sets its own. **Add your policies here.** |
+| `missions/<name>.yaml` | Missions (`name`, `map`, `steps: [{policy, start_pose, goal: {x, y, yaw}, scan, max_runtime_sec (optional)}]`). Written by the UI. `start_pose` is a JSON file in the policy root; `scan` is the step's lidar reference (`missions/scans/`). |
 | `config/mission.yaml` | Tuning for all missions: tolerances, joints, lift height, timeouts. |
 | `config/policy_runner.yaml` | Policy runner machine settings: robot repo, Jetson host (`jetson1@192.168.1.101`), Jetson repo, ssh options, timeouts. |
 
@@ -105,6 +105,8 @@ example `-p host:=0.0.0.0` serves the whole network at `http://<robot-ip>:8090`,
 3. **Create a mission:**
    1. Click **+ New mission**, give it a name and pick the map.
    2. For each policy, **+ Add policy step** and pick the policy. Its start pose is the policy's dataset (`root`).
+      **Policy run time**, beside the start pose, shows how long the policy may run (see
+      [Policy run time](#policy-run-time)), or why it is unknown.
    3. Drive the robot (gamepad) to **exactly** where that policy's episodes started, then click **Use robot pose as
       goal**. This copies the base pose (x, y, yaw from `map → base_link`) and saves a **lidar reference scan** of
       that spot (`missions/scans/`, median of 1 s of `/scan_filtered`). Goals appear as numbered arrows on the map;
@@ -168,6 +170,48 @@ session (for example the UI's) is already running. Other arguments: `mission_con
   the robot during navigation. Logs: `~/.ros/stretch4_mission/policy_<time>_{goto,stream,exec,run}.log`. The next step starts after that. "Finished" means the
   policy **process** ended; it says nothing about whether the task succeeded. Check that physically.
 
+## Policy run time
+
+Each policy runs for at most `max_runtime_sec` (in `config/policies.yaml`). The bridge then stops it
+(`stretch4_policy_run --duration`, plus its own watchdog), and the mission goes on with the next step.
+
+- `max_runtime_sec: 45` is a fixed limit.
+- `max_runtime_sec: auto` is the **longest episode recorded for that policy + `runtime_margin_sec`**:
+
+  ```yaml
+  runtime_margin_sec: 10.0        # top of config/policies.yaml; one value for every "auto" policy
+  policies:
+    grab_sponge:
+      root: ~/data/grab_sponge
+      max_runtime_sec: auto       # longest episode in ~/data/grab_sponge + 10 s
+  ```
+
+  A policy can set its own margin, which overrides the shared one:
+
+  ```yaml
+    clean_table:
+      max_runtime_sec: auto
+      runtime_margin_sec: 20.0    # longest clean_table episode + 20 s
+  ```
+
+  An episode's length is the time `t` of the last sample minus the first in
+  `<root>/episode_*/records.jsonl` (written by `stretch4_policy_recorder`). Unreadable or half-written
+  episodes are skipped. On 2026-10-26 the datasets gave: grab_sponge 26.0 s (→ 36.0 s), clean_table 68.7 s
+  (→ 78.7 s), open_cabinet_v2 50.9 s.
+- Without `max_runtime_sec` a policy gets 120 s.
+- **Per mission step, in the UI:** the editor's **Policy run time (s)** field. Empty (the default) = the policy's
+  value from `config/policies.yaml`, shown as the field's hint; a number = this step's own limit, saved in the
+  mission file as the step's `max_runtime_sec`. It overrides the policy's value for that step only.
+
+The mission works the limits out **when it starts, before the robot moves**, and logs one per step
+(`step 1: grab_sponge: max runtime 36.0 s`). Recording more episodes changes the limit at the next mission
+start; no rebuild needed. The UI shows the same values: on each mission card (per policy, plus the total
+policy time, which does not include driving and alignment), per step in the state machine, and as **Policy run
+time** in the editor (where it can be changed per step). `?` / unknown means `auto` found no recordings; the mission would refuse to start.
+
+`policy_timeout` (`config/mission.yaml`, 300 s) is how long the mission waits for the bridge to report
+`STOPPED`, so every limit must be below it; the mission checks this at start.
+
 ## Controller arbitration (why it is safe to run in sequence)
 
 - Nav2 controls the base only through `cmd_vel` → `stretch_driver` (pushes at priority 0). The arm and lift steps
@@ -182,6 +226,8 @@ session (for example the UI's) is already running. Other arguments: `mission_con
 Any step that fails → `FAILED`, and nothing after it runs:
 - Nav2 not active, not localized, goal rejected/aborted/timeout, base not stopped, final pose outside tolerance
 - arm/lift trajectory rejected or not settled at the required position
+- before the first step: `max_runtime_sec: auto` with no recorded episodes in the policy's `root`, or a limit not
+  below `policy_timeout`
 - bridge parameters rejected, policy already running, `/policy/start` refused (goto failed or timed out, stream/exec
   exited at startup, ssh to the Jetson failed or `stretch4_policy_run` exited at once — each says which log to read),
   policy timeout (→ `/policy/stop`)

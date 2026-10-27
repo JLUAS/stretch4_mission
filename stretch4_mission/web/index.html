@@ -99,7 +99,7 @@
   .mcard .top { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
   .mcard .top strong { font-size:17px; }
   .mcard .err { color:var(--bad); font-size:15px; }
-  .chain { display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin:8px 0 10px; font-size:13px; }
+  .chain { display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin:8px 0 4px; font-size:13px; }
   .chain .p { background:var(--pink); color:var(--navy); padding:2px 8px; border-radius:999px; font-weight:600; }
   .chain .to { color:var(--muted); }
   .empty { text-align:center; padding:20px 8px; color:var(--muted); border:1px dashed var(--line); border-radius:10px; }
@@ -151,7 +151,7 @@
   .step-head strong { display:flex; align-items:center; gap:8px; }
   .step-head strong::before { content:attr(data-n); width:26px; height:26px; border-radius:50%; display:grid; place-items:center; background:var(--navy); color:var(--pink); font-size:15px; }
   .grid2 { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; margin-bottom:10px; align-items:end; }
-  .grid3 { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin:6px 0 10px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin:6px 0 10px; align-items:end; }
   @media (max-width: 600px) { .grid2, .grid3 { grid-template-columns:minmax(0, 1fr); } }
   .s-scan { margin-top:8px; padding:8px 10px; border-radius:8px; background:var(--chip); }
 
@@ -233,8 +233,9 @@
 
   <!-- Editor -->
   <section class="full" aria-labelledby="h-edit">
-    <h2 id="h-edit">✎ Edit mission</h2>
-    <form id="form" novalidate>
+    <details id="edit-box">
+    <summary id="h-edit">✎ Edit mission</summary>
+    <form id="form" novalidate style="margin-top:14px">
       <div class="grid2">
         <div><label for="f-name">Name (letters, digits, _ or -; same name overwrites)</label>
              <input id="f-name" required pattern="[A-Za-z0-9_\-]{1,64}" autocomplete="off"></div>
@@ -247,6 +248,7 @@
       </div>
       <div id="f-msg" class="msg" role="status"></div>
     </form>
+    </details>
   </section>
 
   <section class="full" aria-labelledby="h-log">
@@ -289,6 +291,11 @@ async function api(path, body) {
 const say = (el, text, ok) => { el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err'); };
 const base = (p) => (p || '').split('/').pop();
 const f2 = (v) => (typeof v === 'number' ? v.toFixed(2) : '—');
+// policy run-time limit from /api/policies (fixed, or longest recording + margin); null when unknown
+const runSec = (policy) => policies[policy]?.runtime?.sec ?? null;
+// a step's limit: its own (set in the mission), else its policy's
+const stepSec = (s) => s.max_runtime_sec ?? runSec(s.policy);
+const dur = (sec) => { if (sec === null) return '? s'; const t = Math.round(sec); return t < 60 ? `${t} s` : `${Math.floor(t / 60)} min ${t % 60} s`; };
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
 function options(sel, items, value) {
   sel.replaceChildren(...items.map(([v, t]) => new Option(t, v)));
@@ -403,7 +410,7 @@ function renderStateMachine() {
   };
   $('sm-steps').replaceChildren(
     item(startSt, STATUS[startSt][0], 'Start', startSt === 'active' ? 'Initializing' : STATUS[startSt][1]),
-    ...steps.map((s, i) => { const st = stepStatus(s); return item(st, st === 'pending' || st === 'active' ? String(i + 1) : STATUS[st][0], s.policy, STATUS[st][1], i); }),
+    ...steps.map((s, i) => { const st = stepStatus(s); return item(st, st === 'pending' || st === 'active' ? String(i + 1) : STATUS[st][0], s.policy, `${STATUS[st][1]} · ≤ ${dur(stepSec(s))}`, i); }),
     item(endSt, endSt === 'failed' ? '✕' : '⚑', endSt === 'failed' ? 'Failed' : 'Done', endSt === 'done' ? 'Completed' : endSt === 'failed' ? 'Stopped' : 'Pending'));
 
   // 2. phases of the viewed step
@@ -444,6 +451,10 @@ function renderStateMachine() {
       facts.push(['To goal', `${d.toFixed(3)} m, ${dyaw.toFixed(3)} rad`]);
     }
   }
+  const r = policies[step.policy]?.runtime, own = def?.steps[view]?.max_runtime_sec;
+  const sec = step.max_runtime_sec ?? own ?? r?.sec ?? null;   // live runs carry the limit the controller resolved
+  const why = own !== undefined ? 'set for this step in the mission' : r?.note || '';
+  if (sec !== null || r) facts.push(['Policy run time', sec === null ? `unknown: ${why}` : `up to ${sec.toFixed(1)} s (${why})`]);
   if (step.result) facts.push(['Policy result', step.result]);
   setText('sm-now-title', title); setText('sm-now-text', text);
   $('sm-now-facts').replaceChildren(...facts.flatMap(([k, v]) => [el('dt', '', k), el('dd', '', v)]));
@@ -503,8 +514,11 @@ function renderMissions() {
     if (m.error) card.append(el('div', 'err', '⚠ ' + m.error));
     else {
       const chain = el('div', 'chain');
-      m.steps.forEach((s, i) => { if (i) chain.append(el('span', 'to', '→')); chain.append(el('span', 'p', s.policy)); });
-      card.append(chain);
+      m.steps.forEach((s, i) => { if (i) chain.append(el('span', 'to', '→')); chain.append(el('span', 'p', `${s.policy} · ≤ ${dur(stepSec(s))}`)); });
+      const secs = m.steps.map(stepSec);
+      card.append(chain, el('div', 'muted', secs.includes(null)
+        ? 'Policy time: unknown for some policies (see the editor)'
+        : `Policy time: up to ${dur(secs.reduce((a, b) => a + b, 0))} (plus driving and alignment)`));
     }
     const td = el('div', 'actions');
     if (!m.error) {
@@ -523,7 +537,7 @@ function renderMissions() {
       edit.setAttribute('aria-label', `Edit mission ${m.name}`);
       edit.onclick = () => { selected = m.name; loadIntoForm(draft); renderMissions(); renderStateMachine();
                              if (m.error) say($('f-msg'), `Fix and save: ${m.error}`, false);
-                             $('h-edit').scrollIntoView({ behavior: 'smooth' }); };
+                             openEditor(); };
       td.append(edit);
     }
     const del = el('button', 'small', 'Delete');
@@ -558,21 +572,28 @@ function addStep(step = {}) {
   btn('↓', 'Move step down', () => { box.nextElementSibling && box.parentNode.insertBefore(box.nextElementSibling, box); numberSteps(); });
   btn('Remove', 'Remove step', () => { box.remove(); numberSteps(); });
   head.append(title, tools);
-  const row = el('div', 'grid2');
+  const row = el('div', 'grid3');
   const pol = el('select'); pol.className = 's-policy';
   const unknown = step.policy && !(step.policy in policies) ? [[step.policy, `⚠ unknown: ${step.policy} (choose another)`]] : [];
   options(pol, [...unknown, ...policyNames.map((n) => [n, `${n} — ${policies[n].task || ''}`])], step.policy || policyNames[0]);
   const pose = el('select'); pose.className = 's-start-pose';
+  // the bridge stops the policy after this; empty = the policy's run time from policies.yaml
+  const runtime = el('input'); runtime.type = 'number'; runtime.min = '1'; runtime.step = '0.1'; runtime.className = 's-runtime';
+  runtime.value = step.max_runtime_sec ?? '';
+  const runNote = el('div', 'muted');
   const info = el('div', 'muted');
   const showInfo = (selectedPose) => { const c = policies[pol.value], names = c?.start_poses || [];
     const missing = selectedPose && !names.includes(selectedPose) ? [[selectedPose, `⚠ missing: ${selectedPose}`]] : [];
     options(pose, [...missing, ...names.map((n) => [n, n])], selectedPose || 'start_pose.json');
     pose.disabled = !names.length;
+    const r = c?.runtime, def = !r ? '—' : r.sec === null ? 'unknown' : `${r.sec.toFixed(1)} s`;
+    runtime.placeholder = `policy default: ${def}`;
+    runNote.textContent = !r ? '' : `Empty = policy default (${r.sec === null ? '⚠ ' : ''}${r.note}). Type seconds to set this step's own limit.`;
     info.textContent = c ? `dataset: ${c.root} · checkpoint (Jetson): ${c.ckpt}` : 'This policy is not in config/policies.yaml: choose another one.'; };
   pol.onchange = () => showInfo('start_pose.json');
   showInfo(step.start_pose || 'start_pose.json');
   const lab = (text, input) => { const d = el('div'); const l = el('label', '', text); const id = 'i' + Math.random().toString(36).slice(2); input.id = id; l.htmlFor = id; d.append(l, input); return d; };
-  row.append(lab('Policy', pol), lab('Start pose JSON', pose));
+  row.append(lab('Policy', pol), lab('Start pose JSON', pose), lab('Policy run time (s)', runtime));
   const goal = el('div', 'grid3');
   const num = (cls, v, step_) => { const i = el('input'); i.type = 'number'; i.step = step_; i.className = cls; i.value = v ?? 0; i.oninput = drawMap; return i; };
   // step 0.0001: the browser accepts up to 4 decimals
@@ -596,7 +617,7 @@ function addStep(step = {}) {
       if (S?.pose) { gx.value = S.pose.x; gy.value = S.pose.y; gyaw.value = S.pose.yaw; box.dataset.scan = ''; }
     } finally { use.disabled = !S?.pose; use.textContent = '◎ Use robot pose as goal'; showRef(); drawMap(); }
   };
-  box.append(head, row, info, el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref);
+  box.append(head, row, runNote, info, el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref);
   $('steps').append(box);
   numberSteps();
 }
@@ -608,6 +629,7 @@ function formSteps() {
   return [...$('steps').children].map((box) => ({
     policy: box.querySelector('.s-policy').value,
     start_pose: box.querySelector('.s-start-pose').value,
+    max_runtime_sec: box.querySelector('.s-runtime').value === '' ? null : parseFloat(box.querySelector('.s-runtime').value),
     scan: box.dataset.scan || '',
     goal: { x: parseFloat(box.querySelector('.g-x').value), y: parseFloat(box.querySelector('.g-y').value),
             yaw: parseFloat(box.querySelector('.g-yaw').value) } }));
@@ -622,7 +644,8 @@ function loadIntoForm(m) {
   drawMap();
 }
 $('btn-add-step').onclick = () => addStep();
-$('btn-new').onclick = () => { selected = null; loadIntoForm(null); renderMissions(); renderStateMachine(); $('h-edit').scrollIntoView({ behavior: 'smooth' }); };
+function openEditor() { $('edit-box').open = true; $('h-edit').scrollIntoView({ behavior: 'smooth' }); }
+$('btn-new').onclick = () => { selected = null; loadIntoForm(null); renderMissions(); renderStateMachine(); openEditor(); };
 $('f-map').onchange = () => { formTouched = true; drawMap(); };
 $('form').addEventListener('input', () => (formTouched = true));
 $('form').onsubmit = async (ev) => {

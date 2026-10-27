@@ -97,5 +97,5 @@ stretch4_mission_controller:
     arm_timeout: 30.0
     lift_timeout: 30.0
     policy_start_timeout: 150.0      # > goto_timeout (policy_runner.yaml) + start_delay + a few s
-    policy_timeout: 300.0            # keep > every policy's max_runtime_sec (the bridge stops the policy then)
+    policy_timeout: 300.0            # must be > every policy's max_runtime_sec (checked at mission start)
     status_period: 2.0

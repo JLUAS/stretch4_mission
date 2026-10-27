@@ -1,6 +1,6 @@
 import pytest
 
-from stretch4_mission.mission_file import bridge_params, load_policies, validate_mission
+from stretch4_mission.mission_file import bridge_params, load_policies, longest_episode_sec, validate_mission
 
 POLICIES = {'pick_sponge': {'task': 'Pick', 'root': '~/data/sponge', 'ckpt': '~/p/sponge.ckpt', 'run_args': '--fp16',
                             'max_runtime_sec': 60.0},
@@ -56,7 +56,7 @@ def test_load_policies_defaults_types_and_required(tmp_path):
     f = tmp_path / 'p.yaml'
     f.write_text('policies:\n  a:\n    root: ~/data/a\n    ckpt: ~/a.ckpt\n    max_runtime_sec: 90\n')
     assert load_policies(f)['a'] == {'task': '', 'root': '~/data/a', 'ckpt': '~/a.ckpt', 'run_args': '',
-                                     'max_runtime_sec': 90.0}
+                                     'max_runtime_sec': 90.0, 'runtime_margin_sec': 10.0}
     assert isinstance(load_policies(f)['a']['max_runtime_sec'], float)  # the bridge declares it as double
     for bad in ('policies:\n  a:\n    root: ~/data/a\n',                                  # ckpt missing
                 'policies:\n  a:\n    root: ~/d\n    ckpt: ~/c\n    fps: 30\n'):          # unknown key
@@ -65,7 +65,68 @@ def test_load_policies_defaults_types_and_required(tmp_path):
             load_policies(f)
 
 
+def episode(root, name, times, tail=''):
+    d = root / name
+    d.mkdir(parents=True)
+    (d / 'records.jsonl').write_text(''.join(f'{{"i": {i}, "t": {t}}}\n' for i, t in enumerate(times)) + tail)
+
+
+def test_auto_runtime_is_longest_episode_plus_margin(tmp_path):
+    episode(tmp_path, 'episode_a', [100.0, 101.0, 113.5])        # 13.5 s
+    episode(tmp_path, 'episode_b', [2000.0, 2026.25], '\n')       # 26.25 s, trailing blank line
+    episode(tmp_path, 'episode_c', [5.0], '{"i": 1, "t": ')        # partial last line: skipped
+    episode(tmp_path, '_pending', [0.0, 999.0])                    # not an episode_* folder
+    assert longest_episode_sec(tmp_path) == 26.25
+    f = tmp_path / 'p.yaml'
+    f.write_text(f'runtime_margin_sec: 5\npolicies:\n  a:\n    root: {tmp_path}\n    ckpt: ~/a.ckpt\n'
+                 f'    max_runtime_sec: auto\n')
+    params = bridge_params(load_policies(f)['a'])
+    assert params['max_runtime_sec'] == 31.25 and isinstance(params['max_runtime_sec'], float)
+    assert 'runtime_margin_sec' not in params                      # not a bridge parameter
+    with pytest.raises(ValueError):
+        longest_episode_sec(tmp_path / 'empty')
+    f.write_text('runtime_margin_sec: -1\npolicies:\n  a:\n    root: ~/d\n    ckpt: ~/c\n')
+    with pytest.raises(ValueError):
+        load_policies(f)
+
+
+def test_step_runtime_overrides_the_policy():
+    m = validate_mission(mission(steps=[{'policy': 'pick_sponge', 'goal': {'x': 0, 'y': 0, 'yaw': 0}, 'max_runtime_sec': '45'},
+                                        {'policy': 'clean_table', 'goal': {'x': 0, 'y': 0, 'yaw': 0}, 'max_runtime_sec': ''}]),
+                         POLICIES, MAPS)
+    assert m['steps'][0]['max_runtime_sec'] == 45.0 and 'max_runtime_sec' not in m['steps'][1]   # empty = policy's
+    assert bridge_params(POLICIES['pick_sponge'], '', m['steps'][0]['max_runtime_sec'])['max_runtime_sec'] == 45.0
+    assert bridge_params(POLICIES['pick_sponge'])['max_runtime_sec'] == 60.0
+    for bad in (0, -5, 'x', 5000):
+        with pytest.raises(ValueError, match='max_runtime_sec'):
+            validate_mission(mission(steps=[{'policy': 'pick_sponge', 'goal': {'x': 0, 'y': 0, 'yaw': 0},
+                                             'max_runtime_sec': bad}]), POLICIES, MAPS)
+
+
+def test_margin_per_policy_overrides_the_shared_one(tmp_path):
+    episode(tmp_path, 'episode_a', [0.0, 20.0])
+    f = tmp_path / 'p.yaml'
+    common = f'    root: {tmp_path}\n    ckpt: ~/c\n    max_runtime_sec: auto\n'
+    f.write_text(f'runtime_margin_sec: 10\npolicies:\n  a:\n{common}    runtime_margin_sec: 2.5\n  b:\n{common}')
+    lib = load_policies(f)
+    assert bridge_params(lib['a'])['max_runtime_sec'] == 22.5   # own margin
+    assert bridge_params(lib['b'])['max_runtime_sec'] == 30.0   # shared margin
+    f.write_text(f'policies:\n  a:\n{common}    runtime_margin_sec: -3\n')
+    with pytest.raises(ValueError, match='policy a'):
+        load_policies(f)
+
+
 def test_shipped_policy_library_loads():
     from pathlib import Path
     root = Path(__file__).parents[1]
     assert load_policies(root / 'config' / 'policies.yaml')['grab_sponge']['run_args'] == '--fp16 --base'
+
+
+def test_ui_shows_fixed_and_auto_runtime(tmp_path):
+    from stretch4_mission.mission_ui import MissionUI
+    base = {'root': str(tmp_path), 'runtime_margin_sec': 10.0}
+    assert MissionUI.policy_runtime({**base, 'max_runtime_sec': 45.0}) == {'sec': 45.0, 'note': 'fixed max_runtime_sec'}
+    assert MissionUI.policy_runtime({**base, 'max_runtime_sec': 'auto'})['sec'] is None   # no episodes: shown as unknown
+    episode(tmp_path, 'episode_a', [0.0, 26.0])
+    assert MissionUI.policy_runtime({**base, 'max_runtime_sec': 'auto'}) == {
+        'sec': 36.0, 'note': 'longest recording 26.0 s + 10 s'}

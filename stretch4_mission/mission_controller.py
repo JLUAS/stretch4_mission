@@ -573,11 +573,21 @@ class MissionController(BasicNavigator):
                 if pose_file.parent != root or not pose_file.is_file():
                     raise ValueError(f'step {i}: start pose not found in policy root: {step["start_pose"]}')
                 pose_files.append(pose_file)
+            # before anything moves: "auto" runtimes read the datasets, and the controller must outwait the bridge
+            step_params = [bridge_params(policies[s['policy']], pose_files[i], s.get('max_runtime_sec'))
+                           for i, s in enumerate(mission['steps'])]
+            for i, prm in enumerate(step_params, 1):
+                if prm['max_runtime_sec'] >= self.p['policy_timeout']:
+                    raise ValueError(f"step {i}: max_runtime_sec {prm['max_runtime_sec']:.1f} s must be below "
+                                     f"policy_timeout {self.p['policy_timeout']:.0f} s (config/mission.yaml)")
+                self.info(f"step {i}: {mission['steps'][i - 1]['policy']}: max runtime {prm['max_runtime_sec']:.1f} s")
         except (OSError, ValueError) as exc:
             self.trace = MissionTrace(os.path.basename(self.p['mission_file']), [])
             self.set_state('FAILED', detail=f'Bad mission/policies file: {exc}')
             return False
         self.trace = MissionTrace(mission['name'], mission['steps'])
+        for step, prm in zip(self.trace.data['steps'], step_params):
+            step['max_runtime_sec'] = prm['max_runtime_sec']   # the limit this run really uses, for the UI
         try:
             self.set_state('INITIALIZING', detail=f"{mission['name']}: {len(mission['steps'])} step(s)")
             self.wait_nav2_and_localization()
@@ -610,7 +620,7 @@ class MissionController(BasicNavigator):
                 if self.p['lift_before_policy']:
                     self.lift_up()
 
-                result = self.run_policy(i, name, bridge_params(policies[name], pose_files[i]))
+                result = self.run_policy(i, name, step_params[i])
                 # Not task success: only that the policy process ended.
                 self.trace.result(i, result)
 
