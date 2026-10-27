@@ -20,7 +20,7 @@ policies:
     task: Clean the table
     root: ~/data/clean_table
     ckpt: ~/policies/clean_table.ckpt        # expected on the Jetson after training
-    run_args: --fp16 --base
+    run_args: --num-inference-steps 5 --fp16 --schedule async --base
     max_runtime_sec: auto
 
   # Template for a new policy (it appears in the UI once it has root and ckpt):

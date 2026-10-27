@@ -85,7 +85,10 @@
 
   /* ---------- map ---------- */
   .map-wrap { background:var(--chip); border-radius:10px; padding:8px; }
-  canvas#map { max-width:100%; max-height:560px; width:auto; height:auto; display:block; margin:0 auto; border-radius:6px; image-rendering:pixelated; }
+  canvas#map { max-width:100%; max-height:560px; width:auto; height:auto; display:block; margin:0 auto; border-radius:6px; image-rendering:pixelated;
+               cursor:crosshair; touch-action:none; }   /* touch-action: dragging on the map must not scroll the page */
+  .goto { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); display:grid; gap:8px; }
+  .legend .l-goto::before { background:var(--teal); }
   .legend { display:flex; gap:16px; flex-wrap:wrap; margin-top:8px; }
   .legend span::before { content:''; display:inline-block; width:12px; height:12px; border-radius:50%; margin-right:6px; vertical-align:-1px; }
   .legend .l-robot::before { border:3px solid var(--blue); }
@@ -153,6 +156,9 @@
   .grid2 { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; margin-bottom:10px; align-items:end; }
   .grid3 { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin:6px 0 10px; align-items:end; }
   @media (max-width: 600px) { .grid2, .grid3 { grid-template-columns:minmax(0, 1fr); } }
+  .runargs { margin:10px 0; }
+  .runargs input { font-family:ui-monospace, monospace; }
+  .runargs .cmd { display:block; margin-top:6px; padding:6px 8px; overflow-wrap:anywhere; }
   .s-scan { margin-top:8px; padding:8px 10px; border-radius:8px; background:var(--chip); }
 
   footer { background:var(--navy); color:#B9C8D6; border-top:4px solid var(--pink); text-align:center; padding:16px; font-size:15px; }
@@ -203,9 +209,17 @@
   <section aria-labelledby="h-map">
     <h2 id="h-map">Map <span id="map-name" class="muted"></span></h2>
     <div class="map-wrap">
-      <canvas id="map" width="400" height="300" role="img" aria-label="Map with the robot and the selected mission's goals"></canvas>
+      <canvas id="map" width="400" height="300" role="img" aria-label="Map with the robot and the selected mission's goals. Press and drag on it to choose a Go to pose target."></canvas>
     </div>
-    <div class="legend muted"><span class="l-robot">Robot (live)</span><span class="l-goal">Numbered goals: running mission, or the one in the editor</span></div>
+    <div class="legend muted"><span class="l-robot">Robot (live)</span><span class="l-goal">Numbered goals: running mission, or the one in the editor</span><span class="l-goto">Go to pose target (arrow + footprint)</span></div>
+    <div class="goto">
+      <div id="goto-text" class="muted" role="status">Go to pose: like RViz 2D Goal Pose, press on the map where the robot should go and drag toward where it should face.</div>
+      <div class="actions">
+        <button id="btn-goto" class="primary" disabled>➜ Go to pose</button>
+        <button id="btn-goto-clear" disabled>Clear</button>
+      </div>
+      <div id="goto-msg" class="msg" role="status"></div>
+    </div>
   </section>
 
   <!-- 3. Missions -->
@@ -270,7 +284,7 @@ const PHASE_LABEL = { RETRACTING_ARM: 'Retract arm', CHECKING_POSE: 'Verify pose
                       ALIGNING: 'Align (lidar)', PREPARING_POLICY: 'Prepare lift', EXECUTING_POLICY: 'Execute policy' };
 // what mission_controller.py does in each phase
 const PHASE_HELP = {
-  RETRACTING_ARM: 'Lifting to a safe height, retracting the arm and stowing the wrist so the base can drive.',
+  RETRACTING_ARM: 'Below travel height: lift, then retract the arm; above it: retract, then lower. The wrist is stowed last, so the base can drive.',
   CHECKING_POSE: 'Comparing the robot pose with the step goal; navigation is skipped if it is already there.',
   NAVIGATING: 'Nav2 is driving the base to the step goal.',
   ALIGNING: 'Waiting for the base to stop, then matching the lidar to the saved reference to reach the recorded spot.',
@@ -278,7 +292,7 @@ const PHASE_HELP = {
   EXECUTING_POLICY: 'Going to the policy start pose, then running the policy (stream + exec on the robot, run on the Jetson).',
 };
 const STATUS = { pending: ['○', 'Pending'], active: ['●', 'Running'], done: ['✓', 'Completed'], skipped: ['↷', 'Skipped'], failed: ['✕', 'Failed'] };
-const ROBOT_COLOR = '#0550B3', GOAL_COLOR = '#E0457B';
+const ROBOT_COLOR = '#0550B3', GOAL_COLOR = '#E0457B', GOTO_COLOR = '#0A688A';   // Hello Robot blue, pink, teal
 let S = null, missions = [], policies = {}, maps = [], selected = null, mapCache = {}, formTouched = false;
 
 async function api(path, body) {
@@ -289,7 +303,7 @@ async function api(path, body) {
   return data;
 }
 const say = (el, text, ok) => { el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err'); };
-const base = (p) => (p || '').split('/').pop();
+const base = (p) => (p || '').split('/').slice(p?.endsWith('/map.yaml') ? -2 : -1).join('/');   // final/map.yaml, not map.yaml
 const f2 = (v) => (typeof v === 'number' ? v.toFixed(2) : '—');
 // policy run-time limit from /api/policies (fixed, or longest recording + margin); null when unknown
 const runSec = (policy) => policies[policy]?.runtime?.sec ?? null;
@@ -344,6 +358,7 @@ async function drawMap() {
   const ctx = c.getContext('2d'); ctx.imageSmoothingEnabled = false;
   ctx.drawImage(m.img, 0, 0, c.width, c.height);
   const res = m.meta.resolution, [ox, oy] = m.meta.origin;
+  mapView = { path, scale, res, ox, oy, h: c.height };   // for turning pointer positions back into map coordinates
   const px = (x, y) => [(x - ox) / res * scale, c.height - (y - oy) / res * scale];
   const arrow = (x, y, yaw, len, color, label) => {
     const [u, v] = px(x, y), [u2, v2] = px(x + Math.cos(yaw) * len, y + Math.sin(yaw) * len);
@@ -356,16 +371,71 @@ async function drawMap() {
       ctx.fillText(label, u + 12, v - 11); ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
     }
   };
-  // goals: the running mission's, else the steps in the editor
+  // RViz "2D Goal Pose" look: a ~1 m arrow (shaft + head, white outline) and the robot's footprint at the target
+  const ppm = scale / res;   // pixels per meter
+  const poseMarker = (g, faded) => {
+    const [u, v] = px(g.x, g.y), L = Math.max(1.0 * ppm, 60), W = Math.max(0.12 * ppm, 8), H = Math.max(0.35 * ppm, 22);
+    ctx.save(); ctx.translate(u, v); ctx.rotate(-g.yaw);   // map y points up, canvas y down
+    ctx.setLineDash([6, 4]); ctx.strokeStyle = GOTO_COLOR; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 0.225 * ppm, 0, 7); ctx.stroke(); ctx.setLineDash([]);   // Stretch base radius
+    ctx.beginPath(); ctx.moveTo(0, -W / 2); ctx.lineTo(L - H, -W / 2); ctx.lineTo(L - H, -H / 2); ctx.lineTo(L, 0);
+    ctx.lineTo(L - H, H / 2); ctx.lineTo(L - H, W / 2); ctx.lineTo(0, W / 2); ctx.closePath();
+    ctx.globalAlpha = faded ? 0.7 : 1; ctx.fillStyle = GOTO_COLOR; ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, Math.max(0.05 * ppm, 4), 0, 7); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  };
+  // goals: the running mission's (a running Go to pose gets the pose arrow), else the steps in the editor
+  const gotoRun = S?.mission?.running && S.trace?.mission === 'Go to pose';
   const goals = S?.mission?.running && S.trace?.steps ? S.trace.steps.map((s) => s.goal) : formSteps().map((s) => s.goal);
-  goals.forEach((g, i) => { if (isFinite(g.x)) arrow(g.x, g.y, g.yaw, 0.3, GOAL_COLOR, String(i + 1)); });
+  goals.forEach((g, i) => { if (!isFinite(g.x)) return; if (gotoRun) poseMarker(g); else arrow(g.x, g.y, g.yaw, 0.3, GOAL_COLOR, String(i + 1)); });
   if (S?.pose && S?.nav?.map === path) {
     const [u, v] = px(S.pose.x, S.pose.y);
     ctx.strokeStyle = ROBOT_COLOR; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.arc(u, v, 0.225 / res * scale, 0, 7); ctx.stroke();   // Stretch base radius
     arrow(S.pose.x, S.pose.y, S.pose.yaw, 0.35, ROBOT_COLOR);
   }
+  if (gotoPose && gotoPose.map === path && !gotoRun) poseMarker(gotoPose, !!dragFrom);
 }
+
+// ---------- go to pose: press = position, drag = heading ----------
+let mapView = null, gotoPose = null, dragFrom = null;
+function mapPoint(ev) {
+  const c = $('map'), r = c.getBoundingClientRect(), v = mapView;   // the canvas is scaled by CSS
+  const u = (ev.clientX - r.left) * c.width / r.width, w = (ev.clientY - r.top) * c.height / r.height;
+  return { x: u / v.scale * v.res + v.ox, y: (v.h - w) / v.scale * v.res + v.oy };
+}
+$('map').onpointerdown = (ev) => {
+  if (!mapView || S?.mission?.running) return;
+  $('map').setPointerCapture(ev.pointerId);
+  dragFrom = mapPoint(ev);
+  gotoPose = { ...dragFrom, yaw: gotoPose?.yaw ?? 0, map: mapView.path };
+  renderGoto(); drawMap();
+};
+$('map').onpointermove = (ev) => {
+  if (!dragFrom) return;
+  const p = mapPoint(ev), dx = p.x - dragFrom.x, dy = p.y - dragFrom.y;
+  if (Math.hypot(dx, dy) > 0.05) { gotoPose.yaw = Math.atan2(dy, dx); renderGoto(); drawMap(); }
+};
+$('map').onpointerup = $('map').onpointercancel = () => { dragFrom = null; drawMap(); };   // redraw solid
+const f4 = (v) => Number(v.toFixed(4));
+function renderGoto() {
+  const navOn = !!S?.nav?.running, ok = gotoPose && navOn && S.nav.map === gotoPose.map;
+  const why = !gotoPose ? '' : S?.mission?.running ? ' · a mission is running'
+    : !ok ? ' · start Nav2 on this map to go there' : !S.localization.localized ? ' · localize first' : '';
+  $('goto-text').textContent = gotoPose
+    ? `Target: x ${f4(gotoPose.x)}, y ${f4(gotoPose.y)}, yaw ${f4(gotoPose.yaw)} rad${why}`
+    : 'Go to pose: like RViz 2D Goal Pose, press on the map where the robot should go and drag toward where it should face.';
+  $('btn-goto').disabled = !ok || !S.localization.localized || S.mission.running;
+  $('btn-goto-clear').disabled = !gotoPose;
+}
+$('btn-goto-clear').onclick = () => { gotoPose = null; renderGoto(); drawMap(); };
+$('btn-goto').onclick = async () => {
+  const g = { x: f4(gotoPose.x), y: f4(gotoPose.y), yaw: f4(gotoPose.yaw) };
+  if (!confirm(`Stow the arm, then drive to x ${g.x}, y ${g.y}, yaw ${g.yaw}? The robot will move.`)) return;
+  try { await api('/api/goto', g); selected = null; say($('goto-msg'), 'Go to pose started: stowing the arm, then navigating', true); renderMissions(); refreshStatus(); }
+  catch (e) { say($('goto-msg'), e.message, false); }
+};
 
 // ---------- state machine ----------
 let smView = null;   // step the user clicked to inspect: { key, index }; null follows the live step
@@ -410,7 +480,7 @@ function renderStateMachine() {
   };
   $('sm-steps').replaceChildren(
     item(startSt, STATUS[startSt][0], 'Start', startSt === 'active' ? 'Initializing' : STATUS[startSt][1]),
-    ...steps.map((s, i) => { const st = stepStatus(s); return item(st, st === 'pending' || st === 'active' ? String(i + 1) : STATUS[st][0], s.policy, `${STATUS[st][1]} · ≤ ${dur(stepSec(s))}`, i); }),
+    ...steps.map((s, i) => { const st = stepStatus(s); return item(st, st === 'pending' || st === 'active' ? String(i + 1) : STATUS[st][0], s.policy, STATUS[st][1] + (stepSec(s) === null && !(s.policy in policies) ? '' : ` · ≤ ${dur(stepSec(s))}`), i); }),
     item(endSt, endSt === 'failed' ? '✕' : '⚑', endSt === 'failed' ? 'Failed' : 'Done', endSt === 'done' ? 'Completed' : endSt === 'failed' ? 'Stopped' : 'Pending'));
 
   // 2. phases of the viewed step
@@ -499,6 +569,7 @@ async function refreshStatus() {
   pre.textContent = S.log.length ? S.log.join('\n') : '—';
   if (atBottom) pre.scrollTop = pre.scrollHeight;
   renderFlow();
+  renderGoto();
   renderStateMachine();
   drawMap();
 }
@@ -581,6 +652,13 @@ function addStep(step = {}) {
   const runtime = el('input'); runtime.type = 'number'; runtime.min = '1'; runtime.step = '0.1'; runtime.className = 's-runtime';
   runtime.value = step.max_runtime_sec ?? '';
   const runNote = el('div', 'muted');
+  // stretch4_policy_run arguments on the Jetson; empty = the policy's run_args from policies.yaml
+  const args = el('input'); args.className = 's-runargs'; args.autocomplete = 'off'; args.spellcheck = false;
+  args.value = step.run_args ?? '';
+  const cmd = el('code', 'cmd');
+  const showCmd = () => { const c = policies[pol.value];
+    cmd.textContent = c ? `stretch4_policy_run --ckpt ${c.ckpt} ${args.value.trim() || c.run_args} --yes --duration <run time>` : ''; };
+  args.oninput = showCmd;
   const info = el('div', 'muted');
   const showInfo = (selectedPose) => { const c = policies[pol.value], names = c?.start_poses || [];
     const missing = selectedPose && !names.includes(selectedPose) ? [[selectedPose, `⚠ missing: ${selectedPose}`]] : [];
@@ -589,11 +667,15 @@ function addStep(step = {}) {
     const r = c?.runtime, def = !r ? '—' : r.sec === null ? 'unknown' : `${r.sec.toFixed(1)} s`;
     runtime.placeholder = `policy default: ${def}`;
     runNote.textContent = !r ? '' : `Empty = policy default (${r.sec === null ? '⚠ ' : ''}${r.note}). Type seconds to set this step's own limit.`;
+    args.placeholder = c ? `policy default: ${c.run_args || '(none)'}` : '';
+    showCmd();
     info.textContent = c ? `dataset: ${c.root} · checkpoint (Jetson): ${c.ckpt}` : 'This policy is not in config/policies.yaml: choose another one.'; };
   pol.onchange = () => showInfo('start_pose.json');
   showInfo(step.start_pose || 'start_pose.json');
   const lab = (text, input) => { const d = el('div'); const l = el('label', '', text); const id = 'i' + Math.random().toString(36).slice(2); input.id = id; l.htmlFor = id; d.append(l, input); return d; };
   row.append(lab('Policy', pol), lab('Start pose JSON', pose), lab('Policy run time (s)', runtime));
+  const argsBox = lab('Run arguments (stretch4_policy_run on the Jetson; empty = the policy default)', args);
+  argsBox.className = 'runargs'; argsBox.append(cmd);
   const goal = el('div', 'grid3');
   const num = (cls, v, step_) => { const i = el('input'); i.type = 'number'; i.step = step_; i.className = cls; i.value = v ?? 0; i.oninput = drawMap; return i; };
   // step 0.0001: the browser accepts up to 4 decimals
@@ -617,7 +699,7 @@ function addStep(step = {}) {
       if (S?.pose) { gx.value = S.pose.x; gy.value = S.pose.y; gyaw.value = S.pose.yaw; box.dataset.scan = ''; }
     } finally { use.disabled = !S?.pose; use.textContent = '◎ Use robot pose as goal'; showRef(); drawMap(); }
   };
-  box.append(head, row, runNote, info, el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref);
+  box.append(head, row, runNote, argsBox, info, el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref);
   $('steps').append(box);
   numberSteps();
 }
@@ -630,6 +712,7 @@ function formSteps() {
     policy: box.querySelector('.s-policy').value,
     start_pose: box.querySelector('.s-start-pose').value,
     max_runtime_sec: box.querySelector('.s-runtime').value === '' ? null : parseFloat(box.querySelector('.s-runtime').value),
+    run_args: box.querySelector('.s-runargs').value.trim() || null,
     scan: box.dataset.scan || '',
     goal: { x: parseFloat(box.querySelector('.g-x').value), y: parseFloat(box.querySelector('.g-y').value),
             yaw: parseFloat(box.querySelector('.g-yaw').value) } }));

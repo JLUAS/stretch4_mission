@@ -54,11 +54,12 @@ stretch4_mission_controller:
     trajectory_action: /follow_joint_trajectory
     joint_states_topic: /joint_states
 
-    # Before every navigation: move the lift to 0.5 m, then retract the telescoping arm fully.
+    # Before every navigation: lift below 0.5 m -> lift to 0.5 m, then retract the arm; at or above 0.5 m -> retract
+    # first, then lower to 0.5 m. Then the wrist stow.
     # The gripper is not commanded, so an object held by the previous policy stays held.
     retract_arm_before_navigation: true
     lift_joint: lift_joint
-    lift_retract_position: 0.5       # m, reached from above or below before arm retraction
+    lift_retract_position: 0.5       # m, travel height; also decides the order (see above)
     lift_retract_tolerance: 0.01     # m
     lift_retract_duration: 6.0       # s, trajectory time_from_start
     arm_joint: arm_joint             # stretch_driver ArmCommandGroup name

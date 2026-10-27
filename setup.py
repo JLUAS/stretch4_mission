@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'check_robot = stretch4_mission.check_robot:main',
             'mission_controller = stretch4_mission.mission_controller:main',
             'mission_ui = stretch4_mission.mission_ui:main',
             'policy_bridge = stretch4_mission.policy_bridge:main',

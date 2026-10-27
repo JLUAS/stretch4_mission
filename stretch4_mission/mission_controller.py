@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import PoseStamped, Twist
 from lifecycle_msgs.srv import GetState
@@ -33,7 +34,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 from trajectory_msgs.msg import JointTrajectoryPoint
 
-from stretch4_mission.mission_file import bridge_params, load_mission, load_policies
+from stretch4_mission.mission_file import bridge_params, load_mission, load_policies, parse_goal
 from stretch4_mission.scan_align import base_points, correction, icp
 
 PHASES = ('RETRACTING_ARM', 'CHECKING_POSE', 'NAVIGATING', 'ALIGNING', 'PREPARING_POLICY', 'EXECUTING_POLICY')
@@ -90,6 +91,7 @@ class MissionTrace:
 class MissionController(BasicNavigator):
     PARAMS = {
         'mission_file': '',
+        'goal': '',                  # "x,y,yaw": go to this pose instead of running mission_file (UI "Go to pose")
         'policies_file': '~/ament_ws/src/stretch4_mission/config/policies.yaml',
         'global_frame': 'map',
         'robot_base_frame': 'base_link',
@@ -504,17 +506,26 @@ class MissionController(BasicNavigator):
         raise MissionFailed(f"Alignment did not converge in {int(self.p['align_max_iterations'])} moves")
 
     def retract_arm(self):
-        # Put the lift at travel height before retracting so the arm clears the table from either direction.
-        target = self.p['lift_retract_position']
-        self.move_joint('Lift before retract', self.p['lift_joint'], target, self.p['lift_retract_duration'],
-                        self.p['lift_timeout'], lambda: self.joints.get(self.p['lift_joint']),
-                        lambda v: abs(v - target) <= self.p['lift_retract_tolerance'])
+        # Below travel height: lift to it first, then retract. At or above it: retract first, then lower to it.
+        # The wrist is stowed last either way.
+        lift, target = self.joints.get(self.p['lift_joint']), self.p['lift_retract_position']
+        if lift is None:
+            raise MissionFailed(f"No {self.p['lift_joint']} position in joint_states; arm not moved")
 
-        def extension():
-            values = [self.joints.get(j) for j in self.p['arm_state_joints']]
-            return None if None in values else sum(values)
-        self.move_joint('Retract arm', self.p['arm_joint'], 0.0, self.p['arm_retract_duration'],
-                        self.p['arm_timeout'], extension, lambda v: v <= self.p['arm_retracted_max'])
+        def to_travel_height():
+            self.move_joint('Lift to travel height', self.p['lift_joint'], target, self.p['lift_retract_duration'],
+                            self.p['lift_timeout'], lambda: self.joints.get(self.p['lift_joint']),
+                            lambda v: abs(v - target) <= self.p['lift_retract_tolerance'])
+
+        def retract():
+            def extension():
+                values = [self.joints.get(j) for j in self.p['arm_state_joints']]
+                return None if None in values else sum(values)
+            self.move_joint('Retract arm', self.p['arm_joint'], 0.0, self.p['arm_retract_duration'],
+                            self.p['arm_timeout'], extension, lambda v: v <= self.p['arm_retracted_max'])
+
+        for move in ((to_travel_height, retract) if lift < target else (retract, to_travel_height)):
+            move()
 
         # Match the installed SG4 stow orientation without commanding its gripper.
         for axis in ('yaw', 'roll', 'pitch'):
@@ -563,6 +574,8 @@ class MissionController(BasicNavigator):
                 raise MissionFailed('Policy timeout; stop requested, wait for STOPPED before moving robot')
 
     def run(self):
+        if self.p['goal']:
+            return self.run_goto()
         try:
             policies = load_policies(os.path.expanduser(self.p['policies_file']))
             mission = load_mission(os.path.expanduser(self.p['mission_file']), policies)
@@ -574,7 +587,7 @@ class MissionController(BasicNavigator):
                     raise ValueError(f'step {i}: start pose not found in policy root: {step["start_pose"]}')
                 pose_files.append(pose_file)
             # before anything moves: "auto" runtimes read the datasets, and the controller must outwait the bridge
-            step_params = [bridge_params(policies[s['policy']], pose_files[i], s.get('max_runtime_sec'))
+            step_params = [bridge_params(policies[s['policy']], pose_files[i], s.get('max_runtime_sec'), s.get('run_args'))
                            for i, s in enumerate(mission['steps'])]
             for i, prm in enumerate(step_params, 1):
                 if prm['max_runtime_sec'] >= self.p['policy_timeout']:
@@ -631,10 +644,64 @@ class MissionController(BasicNavigator):
             self.set_state('FAILED', detail=str(exc))
             return False
 
+    def run_goto(self):
+        """Go to pose with stretch_nav_webapp's backend: its stow (stretch4_body), then its NavigateToPose client.
+
+        No alignment, lift or policy.
+        """
+        try:
+            goal = parse_goal(self.p['goal'])
+            from stretch4_nav_webapp import nav_actions, robot_client_helper   # installed with stretch_nav_webapp
+        except (ValueError, ImportError) as exc:
+            self.trace = MissionTrace('Go to pose', [])
+            self.set_state('FAILED', detail=str(exc))
+            return False
+        self.trace = MissionTrace('Go to pose', [{'policy': 'go to pose', 'goal': goal}])
+        try:
+            self.set_state('INITIALIZING', detail='Go to pose')
+            self.wait_nav2_and_localization()
+            self.set_state('RETRACTING_ARM', 0, 'stow (stretch_nav_webapp)')
+            try:
+                robot_client_helper.cmd_stow()   # the robot's own stow pose; refuses when not homed
+            except RuntimeError as exc:
+                raise MissionFailed(f'Stow failed: {exc}') from None
+            self.set_state('CHECKING_POSE', 0, 'go to pose')
+            if self.at_target(goal):
+                self.info('Already within tolerance; skipping navigation')
+                self.trace.skip(0, 'NAVIGATING')
+            else:
+                self.set_state('NAVIGATING', 0, f"goal x={goal['x']:.2f} y={goal['y']:.2f} yaw={goal['yaw']:.2f}")
+                self.webapp_navigate(nav_actions, goal)
+            for phase in ('ALIGNING', 'PREPARING_POLICY', 'EXECUTING_POLICY'):
+                self.trace.skip(0, phase)
+            self.set_state('COMPLETED', detail=f"at x={goal['x']:.2f} y={goal['y']:.2f} yaw={goal['yaw']:.2f}")
+            return True
+        except MissionFailed as exc:
+            self.set_state('FAILED', detail=str(exc))
+            return False
+
+    def webapp_navigate(self, nav_actions, goal):
+        nav_actions.send_navigate_to_pose(goal['x'], goal['y'], goal['yaw'])
+        # shortcut: the webapp returns once Nav2 accepts and keeps the goal handle to itself; waiting on it is the
+        # only way to know the result. Upgrade if stretch_nav_webapp gets a "wait for result" helper.
+        result = nav_actions._goal_handle.get_result_async()
+        deadline = time.monotonic() + self.p['navigation_timeout']
+        while not result.done():
+            if time.monotonic() > deadline:
+                nav_actions.cancel_navigate_to_pose()
+                raise MissionFailed('Navigation timed out; goal canceled')
+            nav_actions._spin_once(0.2)
+        status = result.result().status
+        if status != GoalStatus.STATUS_SUCCEEDED:
+            raise MissionFailed(f'Navigation ended with status {status} (4 = succeeded, 5 = canceled, 6 = aborted)')
+
     def abort(self):
         """Best effort on Ctrl-C: release whichever controller this mission started."""
         try:
-            if self.state == 'NAVIGATING':
+            if self.state == 'NAVIGATING' and self.p['goal']:   # Go to pose: the goal was sent by the webapp client
+                from stretch4_nav_webapp import nav_actions
+                nav_actions.cancel_navigate_to_pose()
+            elif self.state == 'NAVIGATING':
                 self.cancelTask()
             elif self.state == 'ALIGNING':
                 self.stop_base()

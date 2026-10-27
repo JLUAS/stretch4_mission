@@ -36,7 +36,8 @@ from std_srvs.srv import Empty, Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
-from stretch4_mission.mission_file import AUTO, NAME_RE, POSE_RE, load_policies, longest_episode_sec, validate_mission
+from stretch4_mission.mission_file import (AUTO, NAME_RE, POSE_RE, load_policies, parse_goal, recorded_runtime,
+                                           save_recorded_runtimes, validate_mission)
 from stretch4_mission.scan_align import base_points
 
 INDEX_HTML = Path(__file__).with_name('web') / 'index.html'
@@ -142,6 +143,11 @@ class MissionUI(Node):
         self.policies_file = os.path.expanduser(
             param('policies_file', '~/ament_ws/src/stretch4_mission/config/policies.yaml'))
         self.launch_args = list(param('launch_args', ['use_rviz:=true']))
+        try:   # save the recording lengths next to policies.yaml, so they can be exported without the episodes
+            for line in save_recorded_runtimes(self.policies_file):
+                self.get_logger().info(f'Saved recording length: {line}')
+        except (OSError, ValueError) as exc:
+            self.get_logger().warning(f'Could not save the recording lengths: {exc}')
         # 127.0.0.1: reach it through an SSH tunnel (no login on this page); 0.0.0.0 to serve the whole network
         self.host, self.port = param('host', '127.0.0.1'), param('port', 8090)
         self.default_map = os.path.expanduser(param('default_map', ''))
@@ -149,7 +155,7 @@ class MissionUI(Node):
         self.localized_sigma_xy = param('localized_sigma_xy', 0.25)
         self.localized_sigma_yaw = param('localized_sigma_yaw', 0.30)
         self.trajectory_action = param('trajectory_action', '/follow_joint_trajectory')
-        log_dir = Path(os.path.expanduser('~/.ros/stretch4_mission'))
+        log_dir = self.log_dir = Path(os.path.expanduser('~/.ros/stretch4_mission'))
         self.missions_dir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -207,7 +213,8 @@ class MissionUI(Node):
     # ---------- files ----------
 
     def maps(self):
-        return sorted(glob(os.path.join(self.maps_dir, '*.yaml')))
+        # map_saver files, plus <folder>/map.yaml as saved by stretch_nav_webapp (not its keepout/speed/... layers)
+        return sorted(glob(os.path.join(self.maps_dir, '*.yaml')) + glob(os.path.join(self.maps_dir, '*', 'map.yaml')))
 
     def policies(self):
         return load_policies(self.policies_file)
@@ -223,11 +230,11 @@ class MissionUI(Node):
         if policy['max_runtime_sec'] != AUTO:
             return {'sec': policy['max_runtime_sec'], 'note': 'fixed max_runtime_sec'}
         try:
-            longest = longest_episode_sec(policy['root'])
+            longest, source = recorded_runtime(policy)
         except ValueError as exc:
             return {'sec': None, 'note': str(exc)}
         return {'sec': longest + policy['runtime_margin_sec'],
-                'note': f"longest recording {longest:.1f} s + {policy['runtime_margin_sec']:g} s"}
+                'note': f"longest recording {longest:.1f} s ({source}) + {policy['runtime_margin_sec']:g} s"}
 
     def map_meta(self, path):
         if path not in self.maps():
@@ -544,28 +551,42 @@ class MissionUI(Node):
 
     # ---------- missions ----------
 
+    def _check_ready(self):
+        """Before anything moves the robot (a mission or Go to pose); -> the map Nav2 runs on."""
+        if self.mission.running():
+            raise RuntimeError(f'Mission {self.mission.label} is still running; stop it first')
+        nav_map = self.current_map()
+        if not nav_map:
+            raise RuntimeError('Start Nav2 on the map first (and wait until it is ready)')
+        missing = [label for name, label, _ in COMPONENTS if not self.healthy(name)]
+        if missing:
+            raise RuntimeError(f"Not ready: {', '.join(missing)}. Start them and wait for 'ready'")
+        if self.localizing or not self.localized():
+            raise RuntimeError('Localize the robot first')
+        return nav_map
+
     def start_mission(self, name):
         with self.lock:
-            if self.mission.running():
-                raise RuntimeError(f'Mission {self.mission.label} is still running; stop it first')
             if not NAME_RE.match(str(name)) or not (self.missions_dir / f'{name}.yaml').is_file():
                 raise ValueError(f'Unknown mission {name!r}')
             with open(self.missions_dir / f'{name}.yaml') as f:
                 mission = validate_mission(yaml.safe_load(f), self.policies())
-            nav_map = self.current_map()
-            if not nav_map:
-                raise RuntimeError('Start Nav2 on this mission\'s map first (and wait until it is ready)')
+            nav_map = self._check_ready()
             if os.path.realpath(mission['map']) != os.path.realpath(nav_map):
                 raise RuntimeError(f"Mission is for {Path(mission['map']).name}, Nav2 runs {Path(nav_map).name}")
-            missing = [label for name, label, _ in COMPONENTS if not self.healthy(name)]
-            if missing:
-                raise RuntimeError(f"Not ready: {', '.join(missing)}. Start them and wait for 'ready'")
-            if self.localizing or not self.localized():
-                raise RuntimeError('Localize the robot first')
             self.trace = None
             self.mission.start(['ros2', 'launch', 'stretch4_mission', 'mission.launch.py', 'navigation:=false',
                                 f"mission_file:={self.missions_dir / f'{name}.yaml'}",
                                 f'policies_file:={self.policies_file}', *self.launch_args], name)
+
+    def goto_pose(self, body):
+        """Stow the arm, then drive to {x, y, yaw} (map frame, on the map Nav2 runs) with the mission controller."""
+        goal = parse_goal(','.join(str(body.get(k, '')) for k in ('x', 'y', 'yaw')))
+        with self.lock:
+            self._check_ready()
+            self.trace = None
+            self.mission.start(['ros2', 'launch', 'stretch4_mission', 'mission.launch.py', 'navigation:=false',
+                                f"goal:={goal['x']},{goal['y']},{goal['yaw']}", *self.launch_args], 'goto_pose')
 
     def stop_mission(self):
         with self.lock:
@@ -634,7 +655,8 @@ def make_handler(ui):
                     return self._send(200, {'default_map': ui.default_map})
                 if url.path == '/api/policies':
                     return self._send(200, {k: {'task': v['task'], 'root': v['root'], 'ckpt': v['ckpt'],
-                                                'start_poses': ui.policy_start_poses(v), 'runtime': ui.policy_runtime(v)}
+                                                'start_poses': ui.policy_start_poses(v), 'runtime': ui.policy_runtime(v),
+                                                'run_args': v['run_args']}
                                             for k, v in ui.policies().items()})
                 if url.path == '/api/map_meta':
                     meta, _ = ui.map_meta(q.get('path', ''))
@@ -670,6 +692,7 @@ def make_handler(ui):
                     '/api/capture': ui.capture,
                     '/api/start': lambda: (ui.start_mission(body.get('name')), {'started': body.get('name')})[1],
                     '/api/stop': lambda: {'message': ui.stop_mission()},
+                    '/api/goto': lambda: (ui.goto_pose(body), {'started': 'Go to pose'})[1],
                 }
                 if self.path not in routes:
                     return self._send(404, {'error': 'not found'})

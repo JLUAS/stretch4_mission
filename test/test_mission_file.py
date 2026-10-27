@@ -1,6 +1,6 @@
 import pytest
 
-from stretch4_mission.mission_file import bridge_params, load_policies, longest_episode_sec, validate_mission
+from stretch4_mission.mission_file import bridge_params, load_policies, longest_episode_sec, parse_goal, validate_mission
 
 POLICIES = {'pick_sponge': {'task': 'Pick', 'root': '~/data/sponge', 'ckpt': '~/p/sponge.ckpt', 'run_args': '--fp16',
                             'max_runtime_sec': 60.0},
@@ -56,7 +56,7 @@ def test_load_policies_defaults_types_and_required(tmp_path):
     f = tmp_path / 'p.yaml'
     f.write_text('policies:\n  a:\n    root: ~/data/a\n    ckpt: ~/a.ckpt\n    max_runtime_sec: 90\n')
     assert load_policies(f)['a'] == {'task': '', 'root': '~/data/a', 'ckpt': '~/a.ckpt', 'run_args': '',
-                                     'max_runtime_sec': 90.0, 'runtime_margin_sec': 10.0}
+                                     'max_runtime_sec': 90.0, 'runtime_margin_sec': 10.0, 'recorded': None}
     assert isinstance(load_policies(f)['a']['max_runtime_sec'], float)  # the bridge declares it as double
     for bad in ('policies:\n  a:\n    root: ~/data/a\n',                                  # ckpt missing
                 'policies:\n  a:\n    root: ~/d\n    ckpt: ~/c\n    fps: 30\n'):          # unknown key
@@ -129,4 +129,68 @@ def test_ui_shows_fixed_and_auto_runtime(tmp_path):
     assert MissionUI.policy_runtime({**base, 'max_runtime_sec': 'auto'})['sec'] is None   # no episodes: shown as unknown
     episode(tmp_path, 'episode_a', [0.0, 26.0])
     assert MissionUI.policy_runtime({**base, 'max_runtime_sec': 'auto'}) == {
-        'sec': 36.0, 'note': 'longest recording 26.0 s + 10 s'}
+        'sec': 36.0, 'note': 'longest recording 26.0 s (1 episodes) + 10 s'}
+
+
+def test_parse_goal_for_go_to_pose():
+    assert parse_goal('1.5,-2,0.7854') == {'x': 1.5, 'y': -2.0, 'yaw': 0.7854}
+    for bad in ('1,2', '1,2,3,4', '1,x,0', ',,', '1,2,nan', '5000,0,0'):
+        with pytest.raises(ValueError):
+            parse_goal(bad)
+
+
+def test_step_run_args_override_the_policy():
+    step = {'policy': 'pick_sponge', 'goal': {'x': 0, 'y': 0, 'yaw': 0}}
+    args = '--num-inference-steps 5 --fp16 --schedule async --base'
+    m = validate_mission(mission(steps=[{**step, 'run_args': f'  {args} '}, {**step, 'run_args': ''}]), POLICIES, MAPS)
+    assert m['steps'][0]['run_args'] == args and 'run_args' not in m['steps'][1]   # empty = the policy's
+    assert bridge_params(POLICIES['pick_sponge'], '', None, args)['run_args'] == args
+    assert bridge_params(POLICIES['pick_sponge'])['run_args'] == '--fp16'
+    for bad in ('--yes', '--duration 9', '--ckpt=/x.ckpt', '--fp16 "unclosed', 'x' * 301):
+        with pytest.raises(ValueError, match='run_args'):
+            validate_mission(mission(steps=[{**step, 'run_args': bad}]), POLICIES, MAPS)
+
+
+def test_saved_runtimes_replace_deleted_or_cut_off_episodes(tmp_path):
+    import json
+    import shutil
+    from stretch4_mission.mission_file import RUNTIMES_FILE, recorded_runtime, save_recorded_runtimes
+    data = tmp_path / 'data'
+    episode(data, 'episode_a', [0.0, 20.0])
+    episode(data, 'episode_b', [0.0, 68.7])
+    f = tmp_path / 'policies.yaml'
+    f.write_text(f'policies:\n  clean:\n    root: {data}\n    ckpt: ~/c\n    max_runtime_sec: auto\n')
+    assert save_recorded_runtimes(f) == ['clean: 68.7 s (2 episodes)']
+    saved = json.loads((tmp_path / RUNTIMES_FILE).read_text())['clean']
+    assert saved['longest_episode_sec'] == 68.7 and saved['episodes'] == 2
+    assert save_recorded_runtimes(f) == []                                     # nothing new: file untouched
+    shutil.rmtree(data / 'episode_b')
+    episode(data, 'episode_b', [0.0], '{"i": 1, "t": ')                        # copied incompletely
+    assert save_recorded_runtimes(f) == []                                     # a cut-off copy never overwrites
+    assert recorded_runtime(load_policies(f)['clean'])[0] == 68.7              # ... and the saved length is used
+    shutil.rmtree(data / 'episode_a'), shutil.rmtree(data / 'episode_b')     # episodes deleted
+    sec, source = recorded_runtime(load_policies(f)['clean'])
+    assert sec == 68.7 and RUNTIMES_FILE in source
+    assert bridge_params(load_policies(f)['clean'])['max_runtime_sec'] == 78.7
+    (tmp_path / RUNTIMES_FILE).write_text('{"clean": {"longest_episode_sec": -1}, "x": 5}')   # bad entries ignored
+    with pytest.raises(ValueError, match='none saved'):
+        recorded_runtime(load_policies(f)['clean'])
+
+
+def test_a_partial_copy_does_not_replace_the_saved_length(tmp_path):
+    from stretch4_mission.mission_file import recorded_runtime, save_recorded_runtimes
+    data = tmp_path / 'data'
+    for i, end in enumerate((20.0, 68.7, 30.0)):
+        episode(data, f'episode_{i}', [0.0, end])
+    f = tmp_path / 'policies.yaml'
+    f.write_text(f'policies:\n  clean:\n    root: {data}\n    ckpt: ~/c\n    max_runtime_sec: auto\n')
+    save_recorded_runtimes(f)                                    # where it was recorded: 3 episodes, 68.7 s
+    import shutil
+    shutil.rmtree(data / 'episode_1'), shutil.rmtree(data / 'episode_2')   # another robot got only 1 (complete) episode
+    assert save_recorded_runtimes(f) == []                       # fewer episodes than saved: not overwritten
+    sec, source = recorded_runtime(load_policies(f)['clean'])
+    assert sec == 68.7 and 'saved' in source
+    for i, end in enumerate((40.0, 90.0, 10.0, 5.0), start=10):  # more episodes than saved: a newer dataset
+        episode(data, f'episode_{i}', [0.0, end])
+    assert save_recorded_runtimes(f) == ['clean: 90.0 s (5 episodes)']
+    assert recorded_runtime(load_policies(f)['clean'])[0] == 90.0

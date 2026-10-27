@@ -5,7 +5,9 @@
 # In the background: setsid -f <this script> > ~/.ros/stretch4_mission/ui.log 2>&1   (not `&`: it makes Ctrl-C ignored)
 set -e
 export HELLO_FLEET_PATH=/home/hello-robot/stretch_user
-export HELLO_FLEET_ID=stretch-se4-4032
+# This robot's own ID (each Stretch has it there); a fixed ID would load another robot's calibration.
+. /etc/hello-robot/hello-robot.conf
+export HELLO_FLEET_ID
 export PATH="/home/hello-robot/.local/bin:$PATH"
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 set +u

@@ -7,7 +7,7 @@ Multi-policy missions for Stretch 4 (ROS 2 Jazzy, `rmw_zenoh_cpp`), with a web U
 A **mission** is a map plus ordered **steps**. Each step is one trained policy (run with
 `stretch4_policy_recorder`) with a navigation goal; the start pose comes from the policy's dataset. Example "clean the table": open cabinet → pick sponge → clean table. For each step the robot does:
 
-**lift to 0.5 m → retract arm → stow wrist only → check pose → Nav2 to the goal if needed → verify arrival + stationary → lift to max →
+**lift to 0.5 m and retract arm (order depends on the lift height) → stow wrist only → check pose → Nav2 to the goal if needed → verify arrival + stationary → lift to max →
 `/policy/start` (bridge: `stretch4_goto_pose --root <dataset>`, then the policy) → wait for `STOPPED`**
 
 ## Repository layout
@@ -36,7 +36,7 @@ test/                    Pytest suite
 | File | What |
 |---|---|
 | `config/policies.yaml` | Policy library. Each entry: `task`, `root` (robot: dataset folder containing selectable pose JSON files), `ckpt` (Jetson: checkpoint), `run_args` (e.g. `--fp16 --base`), `max_runtime_sec` (seconds, or `auto`; see [Policy run time](#policy-run-time)), optional `runtime_margin_sec`. Top-level `runtime_margin_sec`: the margin `auto` adds unless a policy sets its own. **Add your policies here.** |
-| `missions/<name>.yaml` | Missions (`name`, `map`, `steps: [{policy, start_pose, goal: {x, y, yaw}, scan, max_runtime_sec (optional)}]`). Written by the UI. `start_pose` is a JSON file in the policy root; `scan` is the step's lidar reference (`missions/scans/`). |
+| `missions/<name>.yaml` | Missions (`name`, `map`, `steps: [{policy, start_pose, goal: {x, y, yaw}, scan, max_runtime_sec, run_args (both optional)}]`). Written by the UI. `start_pose` is a JSON file in the policy root; `scan` is the step's lidar reference (`missions/scans/`). |
 | `config/mission.yaml` | Tuning for all missions: tolerances, joints, lift height, timeouts. |
 | `config/policy_runner.yaml` | Policy runner machine settings: robot repo, Jetson host (`jetson1@192.168.1.101`), Jetson repo, ssh options, timeouts. |
 
@@ -61,6 +61,34 @@ test/                    Pytest suite
    The install is a copy, so rebuild after code changes. Policies, missions and `config/mission.yaml` are read from
    `~/ament_ws/src/stretch4_mission/`, so editing them needs no rebuild (`mission.yaml` only when started via
    `ros2 launch` without `mission_config:=`).
+5. **On another robot** (the repo comes configured for the lab's first one). Nothing to change for the robot itself:
+   `scripts/run_ui_robot.sh` reads its ID from `/etc/hello-robot/hello-robot.conf` (`HELLO_FLEET_ID=stretch-se4-…`),
+   which every Stretch has, so the driver and lidars load that robot's calibration. Do check, on that robot:
+   - the datasets: `root:` of each policy in `config/policies.yaml` must exist there (`~/data/...`);
+   - the Jetson: `jetson_host` in `config/policy_runner.yaml`, and the checkpoints (`ckpt:`) on it;
+   - the map: the script preselects `maps/test.yaml`; without it the UI shows the first map in `~/stretch_user/maps`.
+
+## Check the robot before starting the UI
+
+```bash
+source /opt/ros/jazzy/setup.bash && source ~/ament_ws/install/setup.bash
+ros2 run stretch4_mission check_robot
+```
+
+Read-only: it starts, stops and moves nothing. Each line is ✓ (fine), ! (warning) or ✗ (problem), and every ! / ✗
+says how to fix it. At the end it prints `READY` (exit code 0) or `NOT READY: <n> problem(s)` (exit code 1). It checks:
+
+| Section | What |
+|---|---|
+| Environment | ROS Jazzy sourced, `RMW_IMPLEMENTATION=rmw_zenoh_cpp`, the zenoh router, `HELLO_FLEET_PATH`, the package source folder |
+| Robot | UI port 8090 free (no UI already running), `stretch_body_server` running, no `stretch4_policy_stream/exec` started by hand (they block the bridge's), homed / runstop / battery (through stretch_nav_webapp's readiness probe, when installed) |
+| Maps | maps in `$HELLO_FLEET_PATH/maps` (also `<folder>/map.yaml` from stretch_nav_webapp) with their images, the default `test.yaml` |
+| Policies | `config/policies.yaml` loads; per policy: dataset folder, `start_pose.json`, run time (for `auto`: how many episodes are readable; cut-off `records.jsonl` from an incomplete copy show here) |
+| Missions | every `missions/*.yaml` is valid for the current policies and maps, and its lidar references exist |
+| Policy runner | the robot's `stretch4_policy_recorder` tools, ssh to the Jetson without a password, `stretch4_policy_run` and every policy's checkpoint on the Jetson |
+
+Options: `--src <folder>` when the package is not in `~/ament_ws/src/stretch4_mission` (e.g.
+`--src ~/tec_workspace/stretch4_mission`), `--maps <folder>`, `--no-jetson` to skip the Jetson.
 
 ## Use the web UI
 
@@ -82,7 +110,8 @@ http://localhost:8090:
 ssh -N -L 8090:localhost:8090 hello-robot@<robot-ip>
 ```
 
-The script preselects `$HELLO_FLEET_PATH/maps/test.yaml` and turns RViz off. Extra arguments go to the node; for
+The script uses this robot's ID (from `/etc/hello-robot/hello-robot.conf`), preselects
+`$HELLO_FLEET_PATH/maps/test.yaml` and turns RViz off. Extra arguments go to the node; for
 example `-p host:=0.0.0.0` serves the whole network at `http://<robot-ip>:8090`, but the page has no login.
 
 1. **Robot:** choose the map, then **Start all**, or start each part with its own button: **Robot driver**,
@@ -111,7 +140,11 @@ example `-p host:=0.0.0.0` serves the whole network at `http://<robot-ip>:8090`,
       goal**. This copies the base pose (x, y, yaw from `map → base_link`) and saves a **lidar reference scan** of
       that spot (`missions/scans/`, median of 1 s of `/scan_filtered`). Goals appear as numbered arrows on the map;
       the step says whether it has a lidar reference.
-   4. Reorder steps with ↑ ↓, then **Save mission**.
+   4. Optional, per step: **Policy run time (s)** and **Run arguments** (the `stretch4_policy_run` flags on the
+      Jetson, e.g. `--num-inference-steps 5 --fp16 --schedule async --base`). Empty = the policy's values from
+      `config/policies.yaml`, shown as the hints; the line under the arguments shows the exact command. `--ckpt`,
+      `--yes` and `--duration` are set by the bridge and refused here.
+   5. Reorder steps with ↑ ↓, then **Save mission**.
 
    ![Step 3: configure policies, start poses, and navigation goals](docs/ui/03-edit-mission.png)
 
@@ -120,6 +153,14 @@ example `-p host:=0.0.0.0` serves the whole network at `http://<robot-ip>:8090`,
    mission cancels whatever it was doing. Navigation keeps running, so you can start another mission.
 
    ![Step 4: select a mission and follow its state machine](docs/ui/04-run-mission.png)
+
+**Go to pose** (under the map) drives the robot to any spot without a mission: press on the map where it should
+go and drag toward where it should face (a teal **G** arrow), then click **Go to pose**. The robot stows the arm
+with stretch_nav_webapp's stow (the robot's own stow pose; the robot must be homed), then Nav2 drives there through
+the webapp's NavigateToPose client. It shows in
+the state machine like a one-step mission (alignment, lift and policy skipped), and **Stop mission** stops it.
+It needs the same as a mission: Nav2 on the map shown, every part ready, the robot localized. From a terminal:
+`ros2 launch stretch4_mission mission.launch.py navigation:=false goal:=x,y,yaw`.
 
 A mission only starts when Nav2 (started from the UI) runs on **its** map, the driver, lidars and bridge are
 ready, and the robot is localized. The UI says which part is missing.
@@ -144,7 +185,8 @@ session (for example the UI's) is already running. Other arguments: `mission_con
   retracted, lift already at its top) would never finish. A joint already in place is skipped ("already there"),
   a move counts as done once the joint is in place and still (a goal the driver keeps tracking is cancelled), and
   a driver error fails the step at once.
-- **Before every navigation, the lift moves to 0.5 m, the arm retracts, then the wrist moves to the SG4 stow
+- **Before every navigation, the arm retracts and the lift moves to 0.5 m:** with the lift below 0.5 m it lifts first,
+  then retracts; at or above 0.5 m it retracts first, then lowers. **Then the wrist moves to the SG4 stow
   orientation** (yaw 3.14, roll 0, pitch 0). The gripper is not commanded, so a held object stays held.
 - **Navigation:** before each goal, the mission tightens Nav2's goal checker at runtime to 0.10 m / 0.08 rad
   (`stretch_nav2` accepts 0.25 m / 0.34 rad). After success it waits for the base to stop, then checks
@@ -202,6 +244,25 @@ Each policy runs for at most `max_runtime_sec` (in `config/policies.yaml`). The 
 - **Per mission step, in the UI:** the editor's **Policy run time (s)** field. Empty (the default) = the policy's
   value from `config/policies.yaml`, shown as the field's hint; a number = this step's own limit, saved in the
   mission file as the step's `max_runtime_sec`. It overrides the policy's value for that step only.
+
+**Saved recording lengths (`config/policy_runtimes.json`).** When the UI starts, it measures every policy's
+episodes and saves the longest one, with the number of episodes, the date and the robot, in
+`config/policy_runtimes.json` (next to `policies.yaml`):
+
+```json
+{"clean_table": {"episodes": 52, "longest_episode_sec": 68.664, "measured_at": "2026-10-27", "robot": "stretch-se4-4032"}}
+```
+
+`auto` uses the dataset when all its episodes are readable, and this file otherwise. So, to run a policy on
+another robot, copy **only**:
+- `config/policy_runtimes.json`, into the other robot's `config/` (or commit it to the repo);
+- the start pose JSON files at the top of each dataset (`~/data/<policy>/start_pose.json`, `2nd_pose.json`, ...).
+  `stretch4_goto_pose` reads only the selected file.
+
+The `episode_*` folders (images, `records.jsonl`, `meta.json`) can then be deleted there, and on the robot that
+recorded them once the file is saved. An incomplete copy (cut-off `records.jsonl`) never replaces a saved
+length; recording new episodes updates it at the next UI start. `check_robot` and the editor say which source
+each policy's run time comes from.
 
 The mission works the limits out **when it starts, before the robot moves**, and logs one per step
 (`step 1: grab_sponge: max runtime 36.0 s`). Recording more episodes changes the limit at the next mission

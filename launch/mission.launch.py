@@ -15,8 +15,9 @@ from launch_ros.substitutions import FindPackageShare
 
 def launch_setup(context):
     mission_file = os.path.expanduser(LaunchConfiguration('mission_file').perform(context))
-    if not mission_file:
-        raise RuntimeError('mission_file:=<missions/name.yaml> is required')
+    goal = LaunchConfiguration('goal').perform(context)
+    if not mission_file and not goal:
+        raise RuntimeError('mission_file:=<missions/name.yaml> (or goal:=x,y,yaw) is required')
     actions = []
 
     if LaunchConfiguration('navigation').perform(context) == 'true':
@@ -38,6 +39,8 @@ def launch_setup(context):
         ))
 
     overrides = {'mission_file': mission_file}
+    if goal:
+        overrides['goal'] = goal
     policies = LaunchConfiguration('policies_file').perform(context)
     if policies:
         overrides['policies_file'] = policies
@@ -54,6 +57,8 @@ def launch_setup(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('mission_file', default_value='', description='missions/<name>.yaml'),
+        DeclareLaunchArgument('goal', default_value='',
+                              description='x,y,yaw (map frame): stow the arm and drive there instead of a mission'),
         DeclareLaunchArgument('mission_config',
                               default_value=PathJoinSubstitution([FindPackageShare('stretch4_mission'), 'config', 'mission.yaml']),
                               description='Tuning parameters (tolerances, joints, timeouts)'),

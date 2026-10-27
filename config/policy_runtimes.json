@@ -1,0 +1,14 @@
+{
+  "clean_table": {
+    "episodes": 50,
+    "longest_episode_sec": 68.664,
+    "measured_at": "2026-10-27",
+    "robot": "stretch-se4-4032"
+  },
+  "grab_sponge": {
+    "episodes": 100,
+    "longest_episode_sec": 26.0,
+    "measured_at": "2026-10-27",
+    "robot": "stretch-se4-4032"
+  }
+}
