@@ -6,7 +6,7 @@ package_name = 'stretch4_mission'
 
 setup(
     name=package_name,
-    version='0.3.0',
+    version='0.4.0',
     packages=[package_name],
     package_data={package_name: ['web/*']},
     data_files=[
@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'check_robot = stretch4_mission.check_robot:main',
+            'sync_policies = stretch4_mission.sync_policies:main',
             'mission_controller = stretch4_mission.mission_controller:main',
             'mission_ui = stretch4_mission.mission_ui:main',
             'policy_bridge = stretch4_mission.policy_bridge:main',

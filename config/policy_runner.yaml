@@ -1,7 +1,8 @@
-# Machine settings for policy_bridge.py (stretch4_policy_recorder). Per-policy settings: config/policies.yaml.
-# Check these once on the robot before the first run (see README, "Policy runner").
+# Machine settings for policy_bridge.py, for both runners. Per-policy settings: config/policies.yaml.
+# Check these once on the robot before the first run (see README, "Policy runners").
 stretch4_policy_bridge:
   ros__parameters:
+    # runner: recorder (stretch4_policy_recorder)
     robot_repo: ~/repos/stretch4_policy_recorder      # has .venv with stretch4_goto_pose / _policy_stream / _policy_exec
     goto_extra_args: ''           # extra stretch4_goto_pose arguments (--yes is always added), e.g. --no-gripper
     goto_timeout: 120.0           # s
@@ -11,3 +12,8 @@ stretch4_policy_bridge:
     start_delay: 3.0              # s between starting stream/exec and the Jetson run
     stop_timeout: 10.0            # s per stop stage (Ctrl-C, then SIGTERM)
     log_dir: ~/.ros/stretch4_mission
+    # runner: lerobot (lerobot_stretch4, LeRobot async inference)
+    lerobot_robot_repo: ~/repos/lerobot_stretch4      # has .venv with stretch4_pose and lerobot.async_inference
+    lerobot_jetson_repo: ~/repos/lerobot_stretch4     # on the Jetson, has .venv with stretch4_policy_server
+    lerobot_server_port: 8080     # stretch4_policy_server; one already listening there is used and left running
+    lerobot_server_timeout: 60.0  # s for a server started by the bridge to listen

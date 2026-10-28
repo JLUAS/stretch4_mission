@@ -30,3 +30,9 @@ def test_trace_complete():
     t.enter('EXECUTING_POLICY', 0)
     t.complete('done')
     assert phases(t, 0)['EXECUTING_POLICY'] == 'done' and t.data['state'] == 'COMPLETED'
+
+
+def test_trace_phases_follow_the_step_type():
+    t = MissionTrace('m', [{'type': 'navigate', 'goal': {}}, {'type': 'command', 'command': 'ls'}])
+    assert list(phases(t, 0)) == ['RETRACTING_ARM', 'CHECKING_POSE', 'NAVIGATING', 'ALIGNING']
+    assert list(phases(t, 1)) == ['RETRACTING_ARM', 'RUNNING_COMMAND'] and t.data['steps'][1]['command'] == 'ls'

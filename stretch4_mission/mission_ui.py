@@ -46,7 +46,7 @@ LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, relia
 COMPONENTS = [('driver', 'Robot driver', 'stretch_driver, navigation mode'),
               ('lidar', 'Lidars', 'dual Hesai, /scan_filtered, footprint'),
               ('nav2', 'Nav2', 'map, AMCL, planner, controller'),
-              ('bridge', 'Policy bridge', 'stretch4_policy_recorder: goto, stream, exec, Jetson run')]
+              ('bridge', 'Policy bridge', 'start pose, then the policy: recorder or LeRobot runner')]
 # Command-line fragments that identify each part's processes, whoever started them (UI or a terminal).
 # 'detect' decides ON/OFF; 'stop' adds companions that should go down with it.
 PROCESS_PATTERNS = {
@@ -298,9 +298,9 @@ class MissionUI(Node):
         policies = self.policies()
         mission = validate_mission(body, policies, self.maps())
         for i, step in enumerate(mission['steps'], 1):
-            if step['start_pose'] not in self.policy_start_poses(policies[step['policy']]):
+            if step['type'] == 'policy' and step['start_pose'] not in self.policy_start_poses(policies[step['policy']]):
                 raise ValueError(f"step {i}: start pose {step['start_pose']} not found in policy root")
-            if not step['scan']:
+            if not step.get('scan'):
                 continue
             ref = self.missions_dir / 'scans' / step['scan']
             if not ref.is_file():
@@ -656,7 +656,8 @@ def make_handler(ui):
                 if url.path == '/api/policies':
                     return self._send(200, {k: {'task': v['task'], 'root': v['root'], 'ckpt': v['ckpt'],
                                                 'start_poses': ui.policy_start_poses(v), 'runtime': ui.policy_runtime(v),
-                                                'run_args': v['run_args']}
+                                                'run_args': v['run_args'], 'runner': v['runner'],
+                                                'policy_type': v['policy_type'], 'dataset': v['dataset']}
                                             for k, v in ui.policies().items()})
                 if url.path == '/api/map_meta':
                     meta, _ = ui.map_meta(q.get('path', ''))

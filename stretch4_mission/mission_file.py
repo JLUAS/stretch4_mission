@@ -15,8 +15,14 @@ NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 SCAN_RE = re.compile(r'^[A-Za-z0-9_.-]{1,80}\.json$')   # file in <missions_dir>/scans/
 POSE_RE = re.compile(r'^[A-Za-z0-9_.-]{1,80}\.json$')   # file directly in the policy root
 MAX_STEPS = 20
+STEP_TYPES = ('policy', 'navigate', 'command')   # a step without type is a policy step (older files)
+MAX_COMMAND = 1000   # characters of a command step's shell line
 AUTO = 'auto'   # max_runtime_sec: auto -> longest recorded episode of the policy + runtime_margin_sec
-BRIDGE_FLAGS = ('--ckpt', '--yes', '--duration')   # the bridge sets these itself: not allowed in a step's run_args
+RUNNERS = ('recorder', 'lerobot')   # stretch4_policy_recorder (stream/exec + stretch4_policy_run), or LeRobot async
+# the bridge sets these itself, per runner: not allowed in run_args
+BRIDGE_FLAGS = {'recorder': ('--ckpt', '--yes', '--duration'),
+                'lerobot': ('--robot.type', '--robot.mode', '--robot.preprocessing_from', '--task', '--server_address',
+                            '--pretrained_name_or_path', '--policy_type')}
 MARGIN_KEY = 'runtime_margin_sec'
 # Next to policies.yaml: each policy's longest recorded episode, saved by the UI at start. Copy it to another robot
 # (or commit it) and "auto" works there without the episode folders.
@@ -25,10 +31,13 @@ RUNTIMES_FILE = 'policy_runtimes.json'   # top level (all policies) or per polic
 # key is sent at every step so nothing is left over from the previous policy.
 POLICY_KEYS = {
     'task': (str, ''),                  # label for logs and the UI
-    'root': (str, None),                # robot: dataset folder for stretch4_goto_pose --root (the start pose)
-    'ckpt': (str, None),                # Jetson: checkpoint for stretch4_policy_run --ckpt
-    'run_args': (str, ''),              # Jetson: extra stretch4_policy_run arguments, e.g. --fp16 --base
+    'root': (str, None),                # robot: folder with the start pose JSON files (recorder: the dataset)
+    'ckpt': (str, None),                # Jetson: recorder checkpoint, or lerobot pretrained_model folder
+    'run_args': (str, ''),              # extra stretch4_policy_run (recorder) or robot_client (lerobot) arguments
     'max_runtime_sec': (float, 120.0),  # the bridge stops the policy after this (s), or "auto"
+    'runner': (str, 'recorder'),        # how it runs: one of RUNNERS
+    'dataset': (str, ''),               # lerobot, robot: dataset for --robot.preprocessing_from
+    'policy_type': (str, ''),           # lerobot: --policy_type (diffusion, pi05, act, ...)
 }
 
 
@@ -58,6 +67,14 @@ def load_policies(path):
                 policy[k] = AUTO if k == 'max_runtime_sec' and value == AUTO else kind(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f'{path}: policy {name}: {exc}') from None
+        if policy['runner'] not in RUNNERS:
+            raise ValueError(f"{path}: policy {name}: runner must be one of {', '.join(RUNNERS)}")
+        if policy['runner'] == 'lerobot':
+            if not policy['dataset'] or not policy['policy_type']:
+                raise ValueError(f'{path}: policy {name}: runner lerobot needs dataset and policy_type')
+            if policy['max_runtime_sec'] == AUTO:   # auto reads stretch4_policy_recorder episodes
+                raise ValueError(f'{path}: policy {name}: runner lerobot needs max_runtime_sec in seconds, not auto')
+        _run_args(policy['run_args'], f'{path}: policy {name} run_args', policy['runner'])
         policy[MARGIN_KEY] = _margin(cfg[MARGIN_KEY], f'{path}: policy {name}') if MARGIN_KEY in cfg else margin
         policy['recorded'] = saved.get(str(name))   # not a bridge parameter: the saved recording length, or None
         out[str(name)] = policy
@@ -102,14 +119,14 @@ def save_recorded_runtimes(policies_file):
     return changed
 
 
-def _run_args(text, where):
+def _run_args(text, where, runner='recorder'):
     try:
         tokens = shlex.split(text)
     except ValueError as exc:
         raise ValueError(f'{where}: {exc}') from None
     if len(text) > 300:
         raise ValueError(f'{where}: too long (300 characters max)')
-    managed = sorted({t.split('=', 1)[0] for t in tokens} & set(BRIDGE_FLAGS))
+    managed = sorted({t.split('=', 1)[0] for t in tokens} & set(BRIDGE_FLAGS[runner]))
     if managed:
         raise ValueError(f"{where}: {', '.join(managed)} are set by the bridge; remove them")
     return text
@@ -205,32 +222,54 @@ def validate_mission(data, policies, maps=None):
     for i, step in enumerate(steps, 1):
         if not isinstance(step, dict):
             raise ValueError(f'step {i}: must be a mapping')
-        policy = str(step.get('policy', ''))
-        if policy not in policies:
-            raise ValueError(f'step {i}: unknown policy {policy!r}')
+        kind = str(step.get('type') or 'policy')
+        if kind not in STEP_TYPES:
+            raise ValueError(f"step {i}: type must be one of {', '.join(STEP_TYPES)}")
+        if kind == 'command':
+            out.append(_command_step(step, i))
+            continue
         goal = step.get('goal') or {}
         if not isinstance(goal, dict):
             raise ValueError(f'step {i}: goal must be {{x, y, yaw}}')
-        start_pose = str(step.get('start_pose') or 'start_pose.json')
-        if not POSE_RE.match(start_pose):
-            raise ValueError(f'step {i}: bad start pose name {start_pose!r}')
         scan = str(step.get('scan') or '')
         if scan and not SCAN_RE.match(scan):
             raise ValueError(f'step {i}: bad reference scan name {scan!r}')
-        entry = {'policy': policy,
-                 'start_pose': start_pose,
-                 'goal': {k: _number(goal.get(k), f'step {i} goal.{k}') for k in ('x', 'y', 'yaw')},
+        entry = {'type': kind, 'goal': {k: _number(goal.get(k), f'step {i} goal.{k}') for k in ('x', 'y', 'yaw')},
                  'scan': scan}
+        if kind == 'navigate':
+            out.append(entry)
+            continue
+        policy = str(step.get('policy', ''))
+        if policy not in policies:
+            raise ValueError(f'step {i}: unknown policy {policy!r}')
+        start_pose = str(step.get('start_pose') or 'start_pose.json')
+        if not POSE_RE.match(start_pose):
+            raise ValueError(f'step {i}: bad start pose name {start_pose!r}')
+        entry.update(policy=policy, start_pose=start_pose)
         runtime = step.get('max_runtime_sec')
         if runtime not in (None, ''):   # this step's own limit; without it the policy's (policies.yaml) applies
             entry['max_runtime_sec'] = _number(runtime, f'step {i} max_runtime_sec')
             if entry['max_runtime_sec'] <= 0:
                 raise ValueError(f'step {i} max_runtime_sec: must be > 0 (leave it empty for the policy default)')
         run_args = str(step.get('run_args') or '').strip()
-        if run_args:   # this step's own stretch4_policy_run arguments; without them the policy's apply
-            entry['run_args'] = _run_args(run_args, f'step {i} run_args')
+        if run_args:   # this step's own runner arguments; without them the policy's apply
+            entry['run_args'] = _run_args(run_args, f'step {i} run_args', policies[policy].get('runner', 'recorder'))
         out.append(entry)
     return {'name': name, 'map': map_path, 'steps': out}
+
+
+def _command_step(step, i):
+    """A shell line run on the robot (bash, home folder); exit code 0 = success."""
+    command = str(step.get('command') or '').strip()
+    if not 1 <= len(command) <= MAX_COMMAND or any(c in command for c in '\n\r\0'):
+        raise ValueError(f'step {i} command: one line of 1-{MAX_COMMAND} characters')
+    entry = {'type': 'command', 'command': command}
+    timeout = step.get('timeout_sec')
+    if timeout not in (None, ''):   # without it, command_timeout (config/mission.yaml) applies
+        entry['timeout_sec'] = _number(timeout, f'step {i} timeout_sec')
+        if entry['timeout_sec'] <= 0:
+            raise ValueError(f'step {i} timeout_sec: must be > 0 (leave it empty for the default)')
+    return entry
 
 
 def parse_goal(text):

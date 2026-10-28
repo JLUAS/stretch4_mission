@@ -1,9 +1,11 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>stretch4_mission</name>
-  <version>0.3.0</version>
-  <description>Multi-policy Stretch 4 missions: Nav2 to each step goal, raise the lift, run each LeRobot policy through the existing bridge. Web UI with map, global localization, mission editor and live state machine.</description>
-  <maintainer email="jlurquieta1@gmail.com">JLUAS</maintainer>
+  <version>0.4.0</version>
+  <description>Multi-step Stretch 4 missions: policy, navigate-only and command steps. Nav2 to each step goal with lidar alignment, then a learned policy through stretch4_policy_recorder or LeRobot async inference. Web UI with map, global localization, mission editor and live state machine.</description>
+  <maintainer email="jlurquieta1@gmail.com">Jose Luis Urquieta Aguilar</maintainer>
+  <author email="jlurquieta1@gmail.com">Jose Luis Urquieta Aguilar</author>
+  <author>Samuel Francisco Cabrera Ramirez</author>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>

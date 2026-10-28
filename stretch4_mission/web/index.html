@@ -257,7 +257,7 @@
       </div>
       <div id="steps"></div>
       <div class="actions">
-        <button type="button" id="btn-add-step">+ Add policy step</button>
+        <button type="button" id="btn-add-step">+ Add step</button>
         <button type="submit" class="primary">Save mission</button>
       </div>
       <div id="f-msg" class="msg" role="status"></div>
@@ -279,9 +279,14 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const PHASES = ['RETRACTING_ARM', 'CHECKING_POSE', 'NAVIGATING', 'ALIGNING', 'PREPARING_POLICY', 'EXECUTING_POLICY'];
+const PHASES = ['RETRACTING_ARM', 'CHECKING_POSE', 'NAVIGATING', 'ALIGNING', 'PREPARING_POLICY', 'EXECUTING_POLICY', 'RUNNING_COMMAND'];
+// same as STEP_PHASES in mission_controller.py; a step without type is a policy step
+const STEP_PHASES = { policy: PHASES.slice(0, 6), navigate: PHASES.slice(0, 4), command: ['RETRACTING_ARM', 'RUNNING_COMMAND'] };
+const phasesOf = (s) => STEP_PHASES[s.type || 'policy'];
+const stepName = (s) => (s.type === 'navigate' ? 'Navigate' : s.type === 'command' ? 'Command' : s.policy);
 const PHASE_LABEL = { RETRACTING_ARM: 'Retract arm', CHECKING_POSE: 'Verify pose', NAVIGATING: 'Navigate',
-                      ALIGNING: 'Align (lidar)', PREPARING_POLICY: 'Prepare lift', EXECUTING_POLICY: 'Execute policy' };
+                      ALIGNING: 'Align (lidar)', PREPARING_POLICY: 'Prepare lift', EXECUTING_POLICY: 'Execute policy',
+                      RUNNING_COMMAND: 'Run command' };
 // what mission_controller.py does in each phase
 const PHASE_HELP = {
   RETRACTING_ARM: 'Below travel height: lift, then retract the arm; above it: retract, then lower. The wrist is stowed last, so the base can drive.',
@@ -289,7 +294,8 @@ const PHASE_HELP = {
   NAVIGATING: 'Nav2 is driving the base to the step goal.',
   ALIGNING: 'Waiting for the base to stop, then matching the lidar to the saved reference to reach the recorded spot.',
   PREPARING_POLICY: 'Raising the lift to its top before moving to the policy start pose.',
-  EXECUTING_POLICY: 'Going to the policy start pose, then running the policy (stream + exec on the robot, run on the Jetson).',
+  EXECUTING_POLICY: 'Going to the policy start pose, then running the policy with its runner (recorder: stream + exec on the robot, run on the Jetson; LeRobot: robot_client on the robot, policy server on the Jetson).',
+  RUNNING_COMMAND: 'Running the step command on the robot (bash, home folder); exit code 0 = success, anything else stops the mission.',
 };
 const STATUS = { pending: ['○', 'Pending'], active: ['●', 'Running'], done: ['✓', 'Completed'], skipped: ['↷', 'Skipped'], failed: ['✕', 'Failed'] };
 const ROBOT_COLOR = '#0550B3', GOAL_COLOR = '#E0457B', GOTO_COLOR = '#0A688A';   // Hello Robot blue, pink, teal
@@ -388,7 +394,7 @@ async function drawMap() {
   // goals: the running mission's (a running Go to pose gets the pose arrow), else the steps in the editor
   const gotoRun = S?.mission?.running && S.trace?.mission === 'Go to pose';
   const goals = S?.mission?.running && S.trace?.steps ? S.trace.steps.map((s) => s.goal) : formSteps().map((s) => s.goal);
-  goals.forEach((g, i) => { if (!isFinite(g.x)) return; if (gotoRun) poseMarker(g); else arrow(g.x, g.y, g.yaw, 0.3, GOAL_COLOR, String(i + 1)); });
+  goals.forEach((g, i) => { if (!g || !isFinite(g.x)) return; if (gotoRun) poseMarker(g); else arrow(g.x, g.y, g.yaw, 0.3, GOAL_COLOR, String(i + 1)); });
   if (S?.pose && S?.nav?.map === path) {
     const [u, v] = px(S.pose.x, S.pose.y);
     ctx.strokeStyle = ROBOT_COLOR; ctx.lineWidth = 3;
@@ -425,7 +431,7 @@ function renderGoto() {
     : !ok ? ' · start Nav2 on this map to go there' : !S.localization.localized ? ' · localize first' : '';
   $('goto-text').textContent = gotoPose
     ? `Target: x ${f4(gotoPose.x)}, y ${f4(gotoPose.y)}, yaw ${f4(gotoPose.yaw)} rad${why}`
-    : 'Go to pose: like RViz 2D Goal Pose, press on the map where the robot should go and drag toward where it should face.';
+    : 'Go to pose: press on the map where the robot should go and drag toward where it should face.';
   $('btn-goto').disabled = !ok || !S.localization.localized || S.mission.running;
   $('btn-goto-clear').disabled = !gotoPose;
 }
@@ -439,7 +445,7 @@ $('btn-goto').onclick = async () => {
 
 // ---------- state machine ----------
 let smView = null;   // step the user clicked to inspect: { key, index }; null follows the live step
-const stepStatus = (s) => { const v = PHASES.map((p) => s.phases[p] || 'pending');
+const stepStatus = (s) => { const v = phasesOf(s).map((p) => s.phases[p] || 'pending');
   return v.includes('failed') ? 'failed' : v.includes('active') ? 'active' : v.every((x) => x === 'done' || x === 'skipped') ? 'done'
     : v.some((x) => x !== 'pending') ? 'active' : 'pending'; };
 const setText = (id, text) => { if ($(id).textContent !== text) $(id).textContent = text; };   // no re-announce every poll
@@ -453,7 +459,7 @@ function renderStateMachine() {
   const running = !!(S?.mission?.running && live);
   $('sm-pill').textContent = live ? state : 'not running';
   $('sm-pill').className = 'pill' + (state === 'FAILED' ? ' bad' : state === 'COMPLETED' || running ? ' on' : '');
-  const steps = live ? live.steps : def ? def.steps.map((s) => ({ policy: s.policy, goal: s.goal, phases: {} })) : [];
+  const steps = live ? live.steps : def ? def.steps.map((s) => ({ ...s, phases: {} })) : [];
   $('sm').hidden = !steps.length; $('sm-empty').hidden = !!steps.length;
   if (!steps.length) { $('sm-phases').replaceChildren(); $('sm-steps').replaceChildren(); return; }
 
@@ -480,13 +486,13 @@ function renderStateMachine() {
   };
   $('sm-steps').replaceChildren(
     item(startSt, STATUS[startSt][0], 'Start', startSt === 'active' ? 'Initializing' : STATUS[startSt][1]),
-    ...steps.map((s, i) => { const st = stepStatus(s); return item(st, st === 'pending' || st === 'active' ? String(i + 1) : STATUS[st][0], s.policy, STATUS[st][1] + (stepSec(s) === null && !(s.policy in policies) ? '' : ` · ≤ ${dur(stepSec(s))}`), i); }),
+    ...steps.map((s, i) => { const st = stepStatus(s); return item(st, st === 'pending' || st === 'active' ? String(i + 1) : STATUS[st][0], stepName(s), STATUS[st][1] + (stepSec(s) === null && !(s.policy in policies) ? '' : ` · ≤ ${dur(stepSec(s))}`), i); }),
     item(endSt, endSt === 'failed' ? '✕' : '⚑', endSt === 'failed' ? 'Failed' : 'Done', endSt === 'done' ? 'Completed' : endSt === 'failed' ? 'Stopped' : 'Pending'));
 
   // 2. phases of the viewed step
   const step = steps[view];
-  setText('sm-phases-title', `Step ${view + 1} of ${steps.length} · ${step.policy}${smView ? ' (inspecting; click the current step to follow it)' : ''}`);
-  $('sm-phases').replaceChildren(...PHASES.map((p) => {
+  setText('sm-phases-title', `Step ${view + 1} of ${steps.length} · ${stepName(step)}${smView ? ' (inspecting; click the current step to follow it)' : ''}`);
+  $('sm-phases').replaceChildren(...phasesOf(step).map((p) => {
     const st = step.phases[p] || 'pending';
     const li = el('li', 'st-' + st);
     const ic = el('span', 'ic', STATUS[st][0]); ic.setAttribute('aria-hidden', 'true');
@@ -498,8 +504,8 @@ function renderStateMachine() {
   const failedPhase = live && state === 'FAILED' ? PHASES.find((p) => live.steps[live.step ?? -1]?.phases[p] === 'failed') : undefined;
   $('sm-error').hidden = state !== 'FAILED';
   if (state === 'FAILED') {
-    setText('sm-error-title', failedPhase ? `✕ Failed in “${PHASE_LABEL[failedPhase]}” · step ${live.step + 1} (${live.steps[live.step].policy})`
-      : live.step === null || live.step === undefined ? '✕ Failed before the first step (initializing)' : `✕ Failed at step ${live.step + 1} (${live.steps[live.step].policy})`);
+    setText('sm-error-title', failedPhase ? `✕ Failed in “${PHASE_LABEL[failedPhase]}” · step ${live.step + 1} (${stepName(live.steps[live.step])})`
+      : live.step === null || live.step === undefined ? '✕ Failed before the first step (initializing)' : `✕ Failed at step ${live.step + 1} (${stepName(live.steps[live.step])})`);
     setText('sm-error-text', live.detail ? 'Reason: ' + live.detail : 'No reason was reported.');
   }
 
@@ -508,9 +514,9 @@ function renderStateMachine() {
   let title, text;
   if (!live) { title = 'Not running'; text = 'Turn on the robot, localize, then press ▶ Start on this mission.'; }
   else if (state === 'INITIALIZING') { title = 'Initializing'; text = 'Waiting for Nav2 and localization before the first step.'; }
-  else if (state === 'COMPLETED') { title = 'Mission completed'; text = 'All policy processes finished. Check the tasks on the robot: this does not mean each task succeeded.'; }
+  else if (state === 'COMPLETED') { title = 'Mission completed'; text = 'All steps finished. Check the tasks on the robot: this does not mean each task succeeded.'; }
   else if (state === 'FAILED') { title = 'Mission stopped'; text = 'See the reason above. Fix it, then start the mission again.'; }
-  else { title = `${PHASE_LABEL[state] || state} · step ${live.step + 1} of ${steps.length} (${steps[live.step].policy})`; text = PHASE_HELP[state] || ''; }
+  else { title = `${PHASE_LABEL[state] || state} · step ${live.step + 1} of ${steps.length} (${stepName(steps[live.step])})`; text = PHASE_HELP[state] || ''; }
   if (live?.detail && state !== 'FAILED') facts.push(['Controller', live.detail]);
   if (step.goal) facts.push([`Goal (step ${view + 1})`, `x ${f2(step.goal.x)}, y ${f2(step.goal.y)}, yaw ${f2(step.goal.yaw)} rad`]);
   if (S?.pose) {
@@ -525,7 +531,8 @@ function renderStateMachine() {
   const sec = step.max_runtime_sec ?? own ?? r?.sec ?? null;   // live runs carry the limit the controller resolved
   const why = own !== undefined ? 'set for this step in the mission' : r?.note || '';
   if (sec !== null || r) facts.push(['Policy run time', sec === null ? `unknown: ${why}` : `up to ${sec.toFixed(1)} s (${why})`]);
-  if (step.result) facts.push(['Policy result', step.result]);
+  if (step.command) facts.push(['Command', step.command]);
+  if (step.result) facts.push([step.type === 'command' ? 'Command result' : 'Policy result', step.result]);
   setText('sm-now-title', title); setText('sm-now-text', text);
   $('sm-now-facts').replaceChildren(...facts.flatMap(([k, v]) => [el('dt', '', k), el('dd', '', v)]));
 }
@@ -585,11 +592,12 @@ function renderMissions() {
     if (m.error) card.append(el('div', 'err', '⚠ ' + m.error));
     else {
       const chain = el('div', 'chain');
-      m.steps.forEach((s, i) => { if (i) chain.append(el('span', 'to', '→')); chain.append(el('span', 'p', `${s.policy} · ≤ ${dur(stepSec(s))}`)); });
-      const secs = m.steps.map(stepSec);
+      const isPolicy = (s) => (s.type || 'policy') === 'policy';
+      m.steps.forEach((s, i) => { if (i) chain.append(el('span', 'to', '→')); chain.append(el('span', 'p', isPolicy(s) ? `${s.policy} · ≤ ${dur(stepSec(s))}` : stepName(s))); });
+      const secs = m.steps.filter(isPolicy).map(stepSec);
       card.append(chain, el('div', 'muted', secs.includes(null)
         ? 'Policy time: unknown for some policies (see the editor)'
-        : `Policy time: up to ${dur(secs.reduce((a, b) => a + b, 0))} (plus driving and alignment)`));
+        : `Policy time: up to ${dur(secs.reduce((a, b) => a + b, 0))} (plus driving, alignment and commands)`));
     }
     const td = el('div', 'actions');
     if (!m.error) {
@@ -643,21 +651,27 @@ function addStep(step = {}) {
   btn('↓', 'Move step down', () => { box.nextElementSibling && box.parentNode.insertBefore(box.nextElementSibling, box); numberSteps(); });
   btn('Remove', 'Remove step', () => { box.remove(); numberSteps(); });
   head.append(title, tools);
+  const type = el('select'); type.className = 's-type';
+  options(type, [['policy', 'Policy'], ['navigate', 'Navigate only'], ['command', 'Command on the robot']], step.type || 'policy');
   const row = el('div', 'grid3');
   const pol = el('select'); pol.className = 's-policy';
   const unknown = step.policy && !(step.policy in policies) ? [[step.policy, `⚠ unknown: ${step.policy} (choose another)`]] : [];
-  options(pol, [...unknown, ...policyNames.map((n) => [n, `${n} — ${policies[n].task || ''}`])], step.policy || policyNames[0]);
+  // how it runs: runner recorder (stretch4_policy_recorder diffusion) or lerobot (LeRobot async, any policy type)
+  const how = (c) => (c.runner === 'lerobot' ? `LeRobot ${c.policy_type}` : 'recorder diffusion');
+  options(pol, [...unknown, ...policyNames.map((n) => [n, `${n} — ${policies[n].task || ''} · ${how(policies[n])}`])], step.policy || policyNames[0]);
   const pose = el('select'); pose.className = 's-start-pose';
   // the bridge stops the policy after this; empty = the policy's run time from policies.yaml
   const runtime = el('input'); runtime.type = 'number'; runtime.min = '1'; runtime.step = '0.1'; runtime.className = 's-runtime';
   runtime.value = step.max_runtime_sec ?? '';
   const runNote = el('div', 'muted');
-  // stretch4_policy_run arguments on the Jetson; empty = the policy's run_args from policies.yaml
+  // stretch4_policy_run (recorder) or robot_client (lerobot) arguments; empty = the policy's run_args from policies.yaml
   const args = el('input'); args.className = 's-runargs'; args.autocomplete = 'off'; args.spellcheck = false;
   args.value = step.run_args ?? '';
   const cmd = el('code', 'cmd');
-  const showCmd = () => { const c = policies[pol.value];
-    cmd.textContent = c ? `stretch4_policy_run --ckpt ${c.ckpt} ${args.value.trim() || c.run_args} --yes --duration <run time>` : ''; };
+  const showCmd = () => { const c = policies[pol.value], a = args.value.trim() || c?.run_args;
+    cmd.textContent = !c ? '' : c.runner === 'lerobot'
+      ? `Jetson: stretch4_policy_server --host=0.0.0.0 --port=8080 · robot: python -m lerobot.async_inference.robot_client --robot.type=stretch4 --robot.mode=control --robot.preprocessing_from=${c.dataset} --task="${c.task}" --server_address=<jetson>:8080 --pretrained_name_or_path=${c.ckpt} --policy_type=${c.policy_type} ${a}`
+      : `Jetson: stretch4_policy_run --ckpt ${c.ckpt} ${a} --yes --duration <run time>`; };
   args.oninput = showCmd;
   const info = el('div', 'muted');
   const showInfo = (selectedPose) => { const c = policies[pol.value], names = c?.start_poses || [];
@@ -669,12 +683,14 @@ function addStep(step = {}) {
     runNote.textContent = !r ? '' : `Empty = policy default (${r.sec === null ? '⚠ ' : ''}${r.note}). Type seconds to set this step's own limit.`;
     args.placeholder = c ? `policy default: ${c.run_args || '(none)'}` : '';
     showCmd();
-    info.textContent = c ? `dataset: ${c.root} · checkpoint (Jetson): ${c.ckpt}` : 'This policy is not in config/policies.yaml: choose another one.'; };
+    info.textContent = !c ? 'This policy is not in config/policies.yaml: choose another one.'
+      : c.runner === 'lerobot' ? `runs with LeRobot (${c.policy_type}) · start poses: ${c.root} · dataset (robot): ${c.dataset} · model (Jetson): ${c.ckpt}`
+      : `runs with stretch4_policy_recorder (diffusion) · dataset: ${c.root} · checkpoint (Jetson): ${c.ckpt}`; };
   pol.onchange = () => showInfo('start_pose.json');
   showInfo(step.start_pose || 'start_pose.json');
   const lab = (text, input) => { const d = el('div'); const l = el('label', '', text); const id = 'i' + Math.random().toString(36).slice(2); input.id = id; l.htmlFor = id; d.append(l, input); return d; };
   row.append(lab('Policy', pol), lab('Start pose JSON', pose), lab('Policy run time (s)', runtime));
-  const argsBox = lab('Run arguments (stretch4_policy_run on the Jetson; empty = the policy default)', args);
+  const argsBox = lab('Run arguments (empty = the policy default; the full command is below)', args);
   argsBox.className = 'runargs'; argsBox.append(cmd);
   const goal = el('div', 'grid3');
   const num = (cls, v, step_) => { const i = el('input'); i.type = 'number'; i.step = step_; i.className = cls; i.value = v ?? 0; i.oninput = drawMap; return i; };
@@ -699,7 +715,22 @@ function addStep(step = {}) {
       if (S?.pose) { gx.value = S.pose.x; gy.value = S.pose.y; gyaw.value = S.pose.yaw; box.dataset.scan = ''; }
     } finally { use.disabled = !S?.pose; use.textContent = '◎ Use robot pose as goal'; showRef(); drawMap(); }
   };
-  box.append(head, row, runNote, argsBox, info, el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref);
+  // command step: one shell line, run with bash in the robot's home folder (ROS environment); exit code 0 = success
+  const command = el('input'); command.className = 's-command'; command.autocomplete = 'off'; command.spellcheck = false;
+  command.maxLength = 1000; command.placeholder = 'e.g. python3 ~/scripts/wave.py --times 2'; command.value = step.command ?? '';
+  const timeout = el('input'); timeout.type = 'number'; timeout.min = '1'; timeout.step = '1'; timeout.className = 's-timeout';
+  timeout.placeholder = 'default: command_timeout (config/mission.yaml)'; timeout.value = step.timeout_sec ?? '';
+  const cmdBox = el('div', 'runargs');
+  cmdBox.append(lab('Command (bash on the robot)', command), lab('Timeout (s)', timeout), el('div', 'muted',
+    'Runs where the robot is, after the arm retract (put a Navigate step before it to move first), in the home folder with ' +
+    'the ROS environment. Exit code 0 = success; any other code or the timeout stops the mission. Output: ~/.ros/stretch4_mission/command_*.log'));
+  const policyBox = el('div'), goalBox = el('div');
+  policyBox.append(row, runNote, argsBox, info);
+  goalBox.append(el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref);
+  const show = () => { policyBox.hidden = type.value !== 'policy'; goalBox.hidden = type.value === 'command'; cmdBox.hidden = type.value !== 'command'; };
+  type.onchange = () => { show(); drawMap(); };
+  show();
+  box.append(head, lab('Step type (every type starts with the arm retract)', type), policyBox, goalBox, cmdBox);
   $('steps').append(box);
   numberSteps();
 }
@@ -708,14 +739,16 @@ function numberSteps() {
   drawMap();
 }
 function formSteps() {
-  return [...$('steps').children].map((box) => ({
-    policy: box.querySelector('.s-policy').value,
-    start_pose: box.querySelector('.s-start-pose').value,
-    max_runtime_sec: box.querySelector('.s-runtime').value === '' ? null : parseFloat(box.querySelector('.s-runtime').value),
-    run_args: box.querySelector('.s-runargs').value.trim() || null,
-    scan: box.dataset.scan || '',
-    goal: { x: parseFloat(box.querySelector('.g-x').value), y: parseFloat(box.querySelector('.g-y').value),
-            yaw: parseFloat(box.querySelector('.g-yaw').value) } }));
+  return [...$('steps').children].map((box) => {
+    const q = (cls) => box.querySelector(cls), type = q('.s-type').value;
+    if (type === 'command') return { type, command: q('.s-command').value.trim(),
+                                     timeout_sec: q('.s-timeout').value === '' ? null : parseFloat(q('.s-timeout').value) };
+    const goal = { x: parseFloat(q('.g-x').value), y: parseFloat(q('.g-y').value), yaw: parseFloat(q('.g-yaw').value) };
+    if (type === 'navigate') return { type, goal, scan: box.dataset.scan || '' };
+    return { type, policy: q('.s-policy').value, start_pose: q('.s-start-pose').value,
+             max_runtime_sec: q('.s-runtime').value === '' ? null : parseFloat(q('.s-runtime').value),
+             run_args: q('.s-runargs').value.trim() || null, scan: box.dataset.scan || '', goal };
+  });
 }
 function loadIntoForm(m) {
   formTouched = !!m;

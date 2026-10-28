@@ -13,6 +13,9 @@ export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 set +u
 source /opt/ros/jazzy/setup.bash
 source /home/hello-robot/ament_ws/install/setup.bash
+# New policies go into config/policies.yaml: every ~/data/<name> with a <name>.ckpt or <name>_*.ckpt in the Jetson's
+# ~/policies, and every ~/repos/lerobot_stretch4/policies/<name> with ~/policies/<name>/pretrained_model there.
+ros2 run stretch4_mission sync_policies || echo "sync_policies failed: the UI shows only the policies already in config/policies.yaml"
 exec ros2 run stretch4_mission mission_ui --ros-args \
   -p maps_dir:=$HELLO_FLEET_PATH/maps \
   -p default_map:=$HELLO_FLEET_PATH/maps/test.yaml \

@@ -107,6 +107,8 @@ def check_policies(policies_file):
             continue
         if not (root / 'start_pose.json').is_file():
             yield FAIL, f'{name}: {root}/start_pose.json missing', 'the start pose comes from the dataset'
+        if p['runner'] == 'lerobot' and not (Path(os.path.expanduser(p['dataset'])) / 'meta').is_dir():
+            yield FAIL, f"{name}: LeRobot dataset {p['dataset']} missing", 'copy it to the robot, or fix dataset in policies.yaml'
         if p['max_runtime_sec'] == AUTO:
             try:
                 sec, source = recorded_runtime(p)
@@ -128,7 +130,7 @@ def check_missions(missions_dir, policies, maps):
         try:
             with open(path) as f:
                 mission = validate_mission(yaml.safe_load(f), policies, maps)
-            missing = [s['scan'] for s in mission['steps'] if s['scan'] and not (missions_dir / 'scans' / s['scan']).is_file()]
+            missing = [s['scan'] for s in mission['steps'] if s.get('scan') and not (missions_dir / 'scans' / s['scan']).is_file()]
             yield ((FAIL, f'mission {path.stem}: lidar references missing: {", ".join(missing)}',
                     'capture the goals again in the editor') if missing else (OK, f'mission {path.stem}', ''))
         except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -142,10 +144,18 @@ def check_runner(runner_file, policies, jetson):
     except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
         yield FAIL, f'policy runner settings: {exc}', f'fix {runner_file}'
         return
-    venv = Path(os.path.expanduser(prm['robot_repo'])) / '.venv' / 'bin'
-    for tool in ('stretch4_goto_pose', 'stretch4_policy_stream', 'stretch4_policy_exec'):
-        yield (OK if (venv / tool).is_file() else FAIL, f'robot: {venv / tool}',
-               'install stretch4_policy_recorder with its .venv (robot_repo in policy_runner.yaml)')
+    runners = {p['runner'] for p in policies.values()}
+    tools = []
+    if 'recorder' in runners:
+        tools += [(prm['robot_repo'], t, 'install stretch4_policy_recorder with its .venv (robot_repo in policy_runner.yaml)')
+                  for t in ('stretch4_goto_pose', 'stretch4_policy_stream', 'stretch4_policy_exec')]
+    if 'lerobot' in runners:
+        tools += [(prm.get('lerobot_robot_repo', '~/repos/lerobot_stretch4'), t,
+                   'install lerobot_stretch4 with its .venv (lerobot_robot_repo in policy_runner.yaml)')
+                  for t in ('stretch4_pose', 'python')]
+    for repo, tool, fix in tools:
+        path = Path(os.path.expanduser(repo)) / '.venv' / 'bin' / tool
+        yield OK if path.is_file() else FAIL, f'robot: {path}', fix
     if not jetson:
         return
     host = prm['jetson_host']
@@ -158,11 +168,17 @@ def check_runner(runner_file, policies, jetson):
            f'ssh -o BatchMode=yes {host} true must work without a password (ssh-copy-id {host})')
     if not up:
         return
-    files = [(f"{remote_path(prm['jetson_repo'])}/.venv/bin/stretch4_policy_run", 'stretch4_policy_run')]
-    files += [(remote_path(p['ckpt']), f"{name}: checkpoint {p['ckpt']}") for name, p in policies.items()]
-    script = '; '.join(f'test -f {path} && echo 1 || echo 0' for path, _ in files)
+    files = []   # (test flag, path, what): -f a file, -d a folder
+    if 'recorder' in runners:
+        files.append(('-f', f"{remote_path(prm['jetson_repo'])}/.venv/bin/stretch4_policy_run", 'stretch4_policy_run'))
+    if 'lerobot' in runners:
+        repo = remote_path(prm.get('lerobot_jetson_repo', '~/repos/lerobot_stretch4'))
+        files.append(('-f', f'{repo}/.venv/bin/stretch4_policy_server', 'stretch4_policy_server'))
+    files += [('-d' if p['runner'] == 'lerobot' else '-f', remote_path(p['ckpt']), f"{name}: checkpoint {p['ckpt']}")
+              for name, p in policies.items()]
+    script = '; '.join(f'test {flag} {path} && echo 1 || echo 0' for flag, path, _ in files)
     flags = subprocess.run([*ssh, script], capture_output=True, text=True, timeout=15).stdout.split()
-    for (_, what), flag in zip(files, flags + ['0'] * len(files)):
+    for (_, _, what), flag in zip(files, flags + ['0'] * len(files)):
         yield (OK if flag == '1' else FAIL, f'Jetson: {what}', 'copy it to the Jetson (or fix the path)')
 
 

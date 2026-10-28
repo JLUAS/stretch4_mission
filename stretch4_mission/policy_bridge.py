@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Expose stretch4_policy_recorder through /policy/start, /policy/stop, and /policy/status.
+"""Run a policy behind /policy/start, /policy/stop, and /policy/status, with one of two runners.
 
-Start moves to the selected pose, runs stream/exec on the robot, and runs the policy on the Jetson. Stop shuts
-them down in reverse control order. STOPPED describes process state, not task success.
+recorder (stretch4_policy_recorder): stretch4_goto_pose, stream/exec on the robot, stretch4_policy_run on the Jetson.
+lerobot (lerobot_stretch4): stretch4_pose goto, stretch4_policy_server on the Jetson (unless one already listens),
+LeRobot's async robot_client on the robot. Stop shuts them down in STOP_ORDER. STOPPED describes process state, not
+task success.
 """
 
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -19,7 +22,10 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
-RUN_PATTERN = 'stretch4_policy_run --ckpt'   # matches the Jetson process for remote stop
+# processes on the Jetson, stopped there with pkill (the local ssh only carries their output)
+REMOTE_PATTERNS = {'run': 'stretch4_policy_run --ckpt', 'server': 'stretch4_policy_server --host'}
+STOP_ORDER = ('run', 'client', 'exec', 'stream', 'server')   # whatever sends actions first, then the rest
+MAIN = {'recorder': 'run', 'lerobot': 'client'}   # its exit code is the run's last_exit_code
 
 
 def remote_path(path):
@@ -53,12 +59,29 @@ def run_command(ckpt, run_args, duration=0.0):
     return ' '.join(['stretch4_policy_run', '--ckpt', remote_path(ckpt), *map(shlex.quote, shlex.split(run_args)), *extra])
 
 
+def lerobot_client_command(dataset, task, server, ckpt, policy_type, run_args):
+    """LeRobot's async robot_client; everything after --policy_type comes from the policy's run_args."""
+    return ' '.join(['python', '-m', 'lerobot.async_inference.robot_client', '--robot.type=stretch4', '--robot.mode=control',
+                     shlex.quote(f'--robot.preprocessing_from={os.path.expanduser(dataset)}'),
+                     shlex.quote(f'--task={task}'), shlex.quote(f'--server_address={server}'),
+                     shlex.quote(f'--pretrained_name_or_path={ckpt}'), shlex.quote(f'--policy_type={policy_type}'),
+                     *map(shlex.quote, shlex.split(run_args))])
+
+
+def port_open(host, port, timeout=1.0):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 class PolicyBridge(Node):
     def __init__(self):
         super().__init__('stretch4_policy_bridge')
         declare = self.declare_parameter
         for name, default in (('task', ''), ('root', ''), ('pose_file', ''), ('ckpt', ''), ('run_args', ''),
-                              ('max_runtime_sec', 120.0)):
+                              ('max_runtime_sec', 120.0), ('runner', 'recorder'), ('dataset', ''), ('policy_type', '')):
             declare(name, default)
         self.repo = declare('robot_repo', '~/repos/stretch4_policy_recorder').value
         self.goto_args = declare('goto_extra_args', '').value
@@ -66,13 +89,18 @@ class PolicyBridge(Node):
         self.jetson_host = declare('jetson_host', 'jetson1@192.168.1.101').value
         self.jetson_repo = declare('jetson_repo', '~/repos/stretch4_policy_recorder').value
         self.ssh_options = list(declare('ssh_options', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5']).value)
+        self.lerobot_repo = declare('lerobot_robot_repo', '~/repos/lerobot_stretch4').value
+        self.lerobot_jetson_repo = declare('lerobot_jetson_repo', '~/repos/lerobot_stretch4').value
+        self.server_port = declare('lerobot_server_port', 8080).value
+        self.server_timeout = declare('lerobot_server_timeout', 60.0).value
         self.start_delay = declare('start_delay', 3.0).value
         self.stop_timeout = declare('stop_timeout', 10.0).value
         self.log_dir = Path(os.path.expanduser(declare('log_dir', '~/.ros/stretch4_mission').value))
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
         self.lock = threading.Lock()
-        self.procs = {}            # stream / exec / run -> Popen
+        self.procs = {}            # stream / exec / run (recorder), client / server (lerobot) -> Popen
+        self.main = 'run'          # the process whose exit code is reported
         self.started_at = None
         self.stopping = False
         self.last_exit = None
@@ -113,7 +141,8 @@ class PolicyBridge(Node):
     def _start(self):
         if self.running():
             return False, 'Already running; stop the current policy first.'
-        prm = {n: self.get_parameter(n).value for n in ('task', 'root', 'pose_file', 'ckpt', 'run_args')}
+        prm = {n: self.get_parameter(n).value
+               for n in ('task', 'root', 'pose_file', 'ckpt', 'run_args', 'runner', 'dataset', 'policy_type')}
         if not prm['root'] or not prm['ckpt']:
             return False, 'root and ckpt must be set (the mission sets them from policies.yaml)'
         try:
@@ -124,18 +153,16 @@ class PolicyBridge(Node):
             return False, f'start pose not found: {pose_file}'
         self.log_prefix = str(self.log_dir / f"policy_{time.strftime('%Y%m%d-%H%M%S')}")
         self.last_exit = None
+        self.main = MAIN.get(prm['runner'], 'run')
+        if prm['runner'] == 'lerobot':
+            return self._start_lerobot(prm, pose_file)
 
         goto = venv_command(self.repo, ' '.join(['stretch4_goto_pose', '--root', shlex.quote(os.path.expanduser(prm['root'])),
                                                  '--pose-file', shlex.quote(str(pose_file)), '--yes', self.goto_args]).strip())
         self.get_logger().info(f"{prm['task'] or prm['root']}: going to start pose {pose_file.name}")
-        try:
-            with open(f'{self.log_prefix}_goto.log', 'ab') as log:
-                rc = subprocess.run(['bash', '-c', goto], stdout=log, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, timeout=self.goto_timeout).returncode
-        except subprocess.TimeoutExpired:
-            return False, f'stretch4_goto_pose did not finish in {self.goto_timeout:.0f} s; see {self.log_prefix}_goto.log'
-        if rc != 0:
-            return False, f'stretch4_goto_pose failed (exit {rc}); see {self.log_prefix}_goto.log'
+        error = self._goto(goto, 'stretch4_goto_pose')
+        if error:
+            return False, error
 
         self.procs = {'stream': self._spawn('stream', ['bash', '-c', venv_command(self.repo, 'stretch4_policy_stream')]),
                       'exec': self._spawn('exec', ['bash', '-c', venv_command(self.repo, 'stretch4_policy_exec')])}
@@ -154,6 +181,62 @@ class PolicyBridge(Node):
         return True, (f"Policy START REQUESTED: {prm['task'] or prm['root']} (stream, exec, run on {self.jetson_host}); "
                       f'logs {self.log_prefix}_*.log; not task completion.')
 
+    def _goto(self, command, tool):
+        """Run a start-pose move to the end; -> an error message, or None."""
+        try:
+            with open(f'{self.log_prefix}_goto.log', 'ab') as log:
+                rc = subprocess.run(['bash', '-c', command], stdout=log, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, timeout=self.goto_timeout).returncode
+        except subprocess.TimeoutExpired:
+            return f'{tool} did not finish in {self.goto_timeout:.0f} s; see {self.log_prefix}_goto.log'
+        return f'{tool} failed (exit {rc}); see {self.log_prefix}_goto.log' if rc != 0 else None
+
+    def _start_lerobot(self, prm, pose_file):
+        dataset = Path(os.path.expanduser(prm['dataset']))
+        if not (dataset / 'meta').is_dir():
+            return False, f'LeRobot dataset not found on the robot: {dataset} (no meta/)'
+        # the server loads the model by this path: absolute, as the Jetson sees it, and checked before anything moves
+        try:
+            out = subprocess.run(self._ssh(f"cd {remote_path(prm['ckpt'])} && pwd"), capture_output=True, text=True,
+                                 timeout=20)
+        except subprocess.TimeoutExpired:
+            return False, f'no answer from {self.jetson_host} in 20 s'
+        if out.returncode != 0:
+            return False, f"model {prm['ckpt']} not found on {self.jetson_host}: {out.stderr.strip()}"
+        ckpt = out.stdout.strip()
+
+        self.get_logger().info(f"{prm['task'] or prm['root']}: going to start pose {pose_file.name} (stretch4_pose)")
+        error = self._goto(venv_command(self.lerobot_repo, f'stretch4_pose goto {shlex.quote(str(pose_file))} --yes'),
+                           'stretch4_pose goto')
+        if error:
+            return False, error
+
+        host = self.jetson_host.split('@')[-1]
+        self.procs = {}
+        if port_open(host, self.server_port):
+            self.get_logger().info(f'stretch4_policy_server already listens on {host}:{self.server_port}; using it')
+        else:   # ours: started now, stopped with the policy
+            server = f'stretch4_policy_server --host=0.0.0.0 --port={int(self.server_port)}'
+            self.procs['server'] = self._spawn('server', self._ssh(venv_command(self.lerobot_jetson_repo, server, remote=True)))
+            end = time.monotonic() + self.server_timeout
+            while not port_open(host, self.server_port):
+                if self.procs['server'].poll() is not None or time.monotonic() > end:
+                    self._shutdown()
+                    return False, (f'stretch4_policy_server on {self.jetson_host} did not listen on port '
+                                   f'{self.server_port}; see {self.log_prefix}_server.log')
+                time.sleep(0.5)
+        client = lerobot_client_command(prm['dataset'], prm['task'], f'{host}:{self.server_port}', ckpt,
+                                        prm['policy_type'], prm['run_args'])
+        self.procs['client'] = self._spawn('client', ['bash', '-c', venv_command(self.lerobot_repo, client)])
+        time.sleep(self.start_delay)   # a bad flag or no server shows up right away
+        if self.procs['client'].poll() is not None:
+            rc = self.procs['client'].returncode
+            self._shutdown()
+            return False, f'robot_client exited at once (exit {rc}); see {self.log_prefix}_client.log'
+        self.started_at = time.monotonic()
+        return True, (f"Policy START REQUESTED: {prm['task'] or prm['root']} (LeRobot {prm['policy_type']}, server "
+                      f'{host}:{self.server_port}); logs {self.log_prefix}_*.log; not task completion.')
+
     def stop_cb(self, request, response):
         if not self.running():
             response.success, response.message = True, 'No policy running.'
@@ -162,7 +245,7 @@ class PolicyBridge(Node):
         else:
             self.stopping = True
             threading.Thread(target=self._stop_and_clear, daemon=True).start()
-            response.success, response.message = True, 'Stopping: Jetson run, then exec, then stream.'
+            response.success, response.message = True, f"Stopping: {', '.join(n for n in STOP_ORDER if n in self.procs)}."
         return response
 
     def status_cb(self, request, response):
@@ -193,8 +276,8 @@ class PolicyBridge(Node):
         try:
             self._shutdown()
         finally:
-            run = self.procs.get('run')
-            self.last_exit = None if run is None else run.returncode
+            main = self.procs.get(self.main)
+            self.last_exit = None if main is None else main.returncode
             self.started_at, self.stopping = None, False
 
     def _wait(self, names, timeout):
@@ -203,31 +286,29 @@ class PolicyBridge(Node):
             time.sleep(0.2)
 
     def _shutdown(self):
-        """Jetson first (no more actions), then exec, then stream. Ctrl-C, then SIGTERM."""
-        if 'run' in self.procs and self.procs['run'].poll() is None:
-            for sig in ('INT', 'TERM'):
-                subprocess.run(self._ssh(f'pkill -{sig} -f -- {shlex.quote(RUN_PATTERN)}'), timeout=15,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self._wait(['run'], self.stop_timeout)
-                if self.procs['run'].poll() is not None:
-                    break
-            if self.procs['run'].poll() is None:
-                self.procs['run'].terminate()   # the local ssh; the remote may need a manual check
-                self.get_logger().error(f'stretch4_policy_run did not stop on {self.jetson_host}; check it there')
-        for name in ('exec', 'stream'):
+        """In STOP_ORDER: Ctrl-C, then SIGTERM. Jetson processes by pkill there, local ones by process group."""
+        for name in STOP_ORDER:
             proc = self.procs.get(name)
             if proc is None or proc.poll() is not None:
                 continue
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                try:
-                    os.killpg(proc.pid, sig)
-                except ProcessLookupError:
-                    break
+            for sig in ('INT', 'TERM'):
+                if name in REMOTE_PATTERNS:
+                    subprocess.run(self._ssh(f'pkill -{sig} -f -- {shlex.quote(REMOTE_PATTERNS[name])}'), timeout=15,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    try:
+                        os.killpg(proc.pid, getattr(signal, f'SIG{sig}'))
+                    except ProcessLookupError:
+                        break
                 self._wait([name], self.stop_timeout)
                 if proc.poll() is not None:
                     break
-            if proc.poll() is None:
-                self.get_logger().error(f'stretch4_policy_{name} still running (pid {proc.pid}); check it')
+            if proc.poll() is None and name in REMOTE_PATTERNS:
+                proc.terminate()   # the local ssh; the remote may need a manual check
+                self.get_logger().error(f'{REMOTE_PATTERNS[name].split()[0]} did not stop on {self.jetson_host}; '
+                                        'check it there')
+            elif proc.poll() is None:
+                self.get_logger().error(f'{name} still running (pid {proc.pid}); check it')
 
 
 def main(args=None):

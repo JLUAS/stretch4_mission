@@ -1,8 +1,14 @@
-# Policy library: one entry per trained policy, run with stretch4_policy_recorder by policy_bridge.py:
-#   robot:  stretch4_goto_pose --root <root>            (start pose, from the policy's dataset)
-#   robot:  stretch4_policy_stream + stretch4_policy_exec
-#   Jetson: stretch4_policy_run --ckpt <ckpt> <run_args>
+# Policy library: one entry per trained policy, run by policy_bridge.py with the policy's runner:
+#   runner: recorder (default, stretch4_policy_recorder)
+#     robot:  stretch4_goto_pose --root <root>            (start pose, from the policy's dataset)
+#     robot:  stretch4_policy_stream + stretch4_policy_exec
+#     Jetson: stretch4_policy_run --ckpt <ckpt> <run_args>
+#   runner: lerobot (lerobot_stretch4, LeRobot async inference; needs dataset and policy_type)
+#     robot:  stretch4_pose goto <root>/<pose file>
+#     Jetson: stretch4_policy_server
+#     robot:  python -m lerobot.async_inference.robot_client ... <run_args>
 # The mission sets these keys on the bridge at every step. Machine settings: config/policy_runner.yaml.
+# sync_policies (run by scripts/run_ui_robot.sh) adds new policies at the end of this file; see README.
 # max_runtime_sec: seconds, or auto = the longest episode recorded in <root> + runtime_margin_sec (worked out when
 # the mission starts, from each episode_*/records.jsonl; keep it below policy_timeout in config/mission.yaml).
 # runtime_margin_sec here is for every auto policy; a policy can set its own to override it.
@@ -22,6 +28,17 @@ policies:
     ckpt: ~/policies/clean_table.ckpt        # expected on the Jetson after training
     run_args: --num-inference-steps 5 --fp16 --schedule async --base
     max_runtime_sec: auto
+
+  # Template for a LeRobot policy (runner: lerobot; sync_policies adds these too):
+  # floor_cabinet_open:
+  #   runner: lerobot
+  #   task: Floor Cabinet Open                                  # --task
+  #   root: ~/repos/lerobot_stretch4/policies/floor_cabinet_open # start_pose.json, for stretch4_pose goto
+  #   ckpt: ~/policies/floor_cabinet_open/pretrained_model       # on the Jetson: --pretrained_name_or_path
+  #   dataset: ~/.cache/huggingface/lerobot/SilentSammy2001/floor_cabinet_open_20261022_105005  # --robot.preprocessing_from
+  #   policy_type: diffusion                                    # or pi05, act, ...
+  #   run_args: --fps=30 --actions_per_chunk=48 --policy_device=cuda --chunk_size_threshold=0.7 --robot.use_base=true
+  #   max_runtime_sec: 120                                      # seconds; auto works only for runner recorder
 
   # Template for a new policy (it appears in the UI once it has root and ckpt):
   # open_cabinet:

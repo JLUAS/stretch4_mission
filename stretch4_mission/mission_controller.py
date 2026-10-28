@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run ordered navigation and learned-policy mission steps.
+"""Run a mission's steps in order: policy, navigate-only, and command steps.
 
-Execution is sequential so Nav2 and a policy never control the base together. Progress is published as JSON on
+Execution is sequential so Nav2, a policy and a command never control the robot together. Progress is published as JSON on
 /mission/state for the web UI.
 """
 
@@ -9,6 +9,8 @@ import collections
 import json
 import math
 import os
+import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -37,7 +39,11 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 from stretch4_mission.mission_file import bridge_params, load_mission, load_policies, parse_goal
 from stretch4_mission.scan_align import base_points, correction, icp
 
-PHASES = ('RETRACTING_ARM', 'CHECKING_POSE', 'NAVIGATING', 'ALIGNING', 'PREPARING_POLICY', 'EXECUTING_POLICY')
+PHASES = ('RETRACTING_ARM', 'CHECKING_POSE', 'NAVIGATING', 'ALIGNING', 'PREPARING_POLICY', 'EXECUTING_POLICY',
+          'RUNNING_COMMAND')
+# what each step type goes through; every type starts with the arm retract
+STEP_PHASES = {'policy': PHASES[:6], 'navigate': PHASES[:4], 'command': ('RETRACTING_ARM', 'RUNNING_COMMAND')}
+LOG_DIR = Path(os.path.expanduser('~/.ros/stretch4_mission'))
 
 
 class MissionFailed(Exception):
@@ -58,8 +64,9 @@ class MissionTrace:
 
     def __init__(self, name, steps):
         self.data = {'mission': name, 'state': 'INITIALIZING', 'step': None, 'detail': '',
-                     'steps': [{'policy': s['policy'], 'goal': s['goal'], 'result': '',
-                                'phases': {p: 'pending' for p in PHASES}} for s in steps]}
+                     'steps': [{'type': s.get('type', 'policy'), 'policy': s.get('policy'), 'goal': s.get('goal'),
+                                'command': s.get('command'), 'result': '',
+                                'phases': {p: 'pending' for p in STEP_PHASES[s.get('type', 'policy')]}} for s in steps]}
 
     def _finish_active(self, status):
         for step in self.data['steps']:
@@ -156,9 +163,10 @@ class MissionController(BasicNavigator):
         'stationary_timeout': 20.0,
         'arm_timeout': 30.0,
         'lift_timeout': 30.0,
-        'policy_start_timeout': 150.0,
+        'policy_start_timeout': 200.0,
         'policy_timeout': 300.0,
         'status_period': 2.0,
+        'command_timeout': 300.0,    # s, command steps without their own timeout_sec
     }
 
     def __init__(self):
@@ -180,6 +188,7 @@ class MissionController(BasicNavigator):
         self.create_subscription(LaserScan, self.p['scan_topic'], lambda m: self.scans.append(m), qos_profile_sensor_data)
         self.cmd_vel = self.create_publisher(Twist, self.p['cmd_vel_topic'], 10)
         self.trajectory_goal = None
+        self.command = None   # the running command step's process
         self.clients_ = {}
 
     # ---------- helpers ----------
@@ -536,8 +545,8 @@ class MissionController(BasicNavigator):
                             lambda v, target=target: abs(v - target) <= self.p['wrist_stow_tolerance'])
 
     def lift_up(self):
-        # Raise only the lift before the bridge's stretch4_goto_pose, which may interpolate all joints
-        # without collision checking; coming down from the top keeps the arm clear of the table.
+        # Raise only the lift before the bridge's start-pose move (stretch4_goto_pose or stretch4_pose goto), which
+        # may interpolate all joints without collision checking; coming down from the top keeps the arm clear.
         self.move_joint('Lift up', self.p['lift_joint'], self.p['lift_up_position'], self.p['lift_up_duration'],
                         self.p['lift_timeout'], lambda: self.joints.get(self.p['lift_joint']),
                         lambda v: v >= self.p['lift_min_height'])
@@ -550,7 +559,7 @@ class MissionController(BasicNavigator):
         self.set_remote_params(self.p['bridge_node'], params)
         self.set_state('EXECUTING_POLICY', step_index,
                        f'{policy_name}: calling start (pose {Path(params["pose_file"]).name})')
-        # The bridge runs stretch4_goto_pose synchronously inside this call, then starts stream/exec/run.
+        # The bridge moves to the start pose inside this call, then starts the runner's processes.
         res = self.call_trigger(self.p['start_service'], self.p['policy_start_timeout'])
         if not res.success:
             raise MissionFailed(f"{self.p['start_service']} refused: {res.message}")
@@ -579,39 +588,45 @@ class MissionController(BasicNavigator):
         try:
             policies = load_policies(os.path.expanduser(self.p['policies_file']))
             mission = load_mission(os.path.expanduser(self.p['mission_file']), policies)
-            pose_files = []
-            for i, step in enumerate(mission['steps'], 1):
+            # before anything moves: "auto" runtimes read the datasets, and the controller must outwait the bridge
+            step_params = {}   # step index -> bridge parameters, policy steps only
+            for i, step in enumerate(mission['steps']):
+                if step['type'] != 'policy':
+                    continue
                 root = Path(os.path.expanduser(policies[step['policy']]['root'])).resolve()
                 pose_file = (root / step['start_pose']).resolve()
                 if pose_file.parent != root or not pose_file.is_file():
-                    raise ValueError(f'step {i}: start pose not found in policy root: {step["start_pose"]}')
-                pose_files.append(pose_file)
-            # before anything moves: "auto" runtimes read the datasets, and the controller must outwait the bridge
-            step_params = [bridge_params(policies[s['policy']], pose_files[i], s.get('max_runtime_sec'), s.get('run_args'))
-                           for i, s in enumerate(mission['steps'])]
-            for i, prm in enumerate(step_params, 1):
+                    raise ValueError(f'step {i + 1}: start pose not found in policy root: {step["start_pose"]}')
+                prm = step_params[i] = bridge_params(policies[step['policy']], pose_file, step.get('max_runtime_sec'),
+                                                     step.get('run_args'))
                 if prm['max_runtime_sec'] >= self.p['policy_timeout']:
-                    raise ValueError(f"step {i}: max_runtime_sec {prm['max_runtime_sec']:.1f} s must be below "
+                    raise ValueError(f"step {i + 1}: max_runtime_sec {prm['max_runtime_sec']:.1f} s must be below "
                                      f"policy_timeout {self.p['policy_timeout']:.0f} s (config/mission.yaml)")
-                self.info(f"step {i}: {mission['steps'][i - 1]['policy']}: max runtime {prm['max_runtime_sec']:.1f} s")
+                self.info(f"step {i + 1}: {step['policy']}: max runtime {prm['max_runtime_sec']:.1f} s")
         except (OSError, ValueError) as exc:
             self.trace = MissionTrace(os.path.basename(self.p['mission_file']), [])
             self.set_state('FAILED', detail=f'Bad mission/policies file: {exc}')
             return False
         self.trace = MissionTrace(mission['name'], mission['steps'])
-        for step, prm in zip(self.trace.data['steps'], step_params):
-            step['max_runtime_sec'] = prm['max_runtime_sec']   # the limit this run really uses, for the UI
+        for i, prm in step_params.items():
+            self.trace.data['steps'][i]['max_runtime_sec'] = prm['max_runtime_sec']   # the limit this run really uses
         try:
             self.set_state('INITIALIZING', detail=f"{mission['name']}: {len(mission['steps'])} step(s)")
             self.wait_nav2_and_localization()
 
             for i, step in enumerate(mission['steps']):
-                goal, name = step['goal'], step['policy']
+                kind = step['type']
+                name = step['policy'] if kind == 'policy' else kind
                 if self.p['retract_arm_before_navigation']:
                     self.set_state('RETRACTING_ARM', i, name)
                     self.retract_arm()
                 else:
                     self.trace.skip(i, 'RETRACTING_ARM')
+                if kind == 'command':
+                    self.trace.result(i, self.run_command(i, step))
+                    continue
+
+                goal = step['goal']
 
                 self.set_state('CHECKING_POSE', i, name)
                 if self.at_target(goal):
@@ -627,7 +642,9 @@ class MissionController(BasicNavigator):
                 if step['scan']:
                     self.align_to_reference(step['scan'], goal)
                 elif not self.at_target(goal):
-                    raise MissionFailed('Stopped outside mission tolerance; policy not started')
+                    raise MissionFailed('Stopped outside mission tolerance' + ('; policy not started' if kind == 'policy' else ''))
+                if kind == 'navigate':
+                    continue
 
                 self.set_state('PREPARING_POLICY', i, name)
                 if self.p['lift_before_policy']:
@@ -637,7 +654,7 @@ class MissionController(BasicNavigator):
                 # Not task success: only that the policy process ended.
                 self.trace.result(i, result)
 
-            self.set_state('COMPLETED', detail='all policy processes finished. '
+            self.set_state('COMPLETED', detail='all steps finished. '
                                                'Verify the tasks physically; this is not task success.')
             return True
         except MissionFailed as exc:
@@ -656,7 +673,7 @@ class MissionController(BasicNavigator):
             self.trace = MissionTrace('Go to pose', [])
             self.set_state('FAILED', detail=str(exc))
             return False
-        self.trace = MissionTrace('Go to pose', [{'policy': 'go to pose', 'goal': goal}])
+        self.trace = MissionTrace('Go to pose', [{'type': 'navigate', 'goal': goal}])
         try:
             self.set_state('INITIALIZING', detail='Go to pose')
             self.wait_nav2_and_localization()
@@ -672,13 +689,53 @@ class MissionController(BasicNavigator):
             else:
                 self.set_state('NAVIGATING', 0, f"goal x={goal['x']:.2f} y={goal['y']:.2f} yaw={goal['yaw']:.2f}")
                 self.webapp_navigate(nav_actions, goal)
-            for phase in ('ALIGNING', 'PREPARING_POLICY', 'EXECUTING_POLICY'):
-                self.trace.skip(0, phase)
+            self.trace.skip(0, 'ALIGNING')
             self.set_state('COMPLETED', detail=f"at x={goal['x']:.2f} y={goal['y']:.2f} yaw={goal['yaw']:.2f}")
             return True
         except MissionFailed as exc:
             self.set_state('FAILED', detail=str(exc))
             return False
+
+    def run_command(self, step_index, step):
+        """Command step: its shell line with bash in the home folder, ROS environment inherited; exit 0 = success."""
+        timeout = step.get('timeout_sec', self.p['command_timeout'])
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log = LOG_DIR / f"command_{time.strftime('%Y%m%d-%H%M%S')}.log"
+        self.set_state('RUNNING_COMMAND', step_index, f"$ {step['command']}  (log {log})")
+        with open(log, 'wb') as f:   # own session: stop_command ends the whole tree, scripts it started too
+            self.command = subprocess.Popen(['bash', '-c', step['command']], cwd=os.path.expanduser('~'), stdout=f,
+                                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        deadline = time.monotonic() + timeout
+        while self.command.poll() is None:
+            if time.monotonic() > deadline:
+                self.stop_command()
+                raise MissionFailed(f'Command still running after {timeout:.0f} s; stopped (log {log})')
+            self.spin_for(0.5)
+        code, self.command = self.command.returncode, None
+        if code != 0:
+            raise MissionFailed(f'Command exited with code {code} (log {log})')
+        self.info(f'Command finished (exit code 0, log {log})')
+        return f'exit code 0; log {log}'
+
+    def stop_command(self, grace=5.0):
+        """Ctrl-C to the command's process group, up to grace seconds to exit, then SIGKILL to whatever is left."""
+        proc, self.command = self.command, None
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGINT)
+            proc.wait(grace)
+        except ProcessLookupError:
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:   # always: a non-interactive bash starts its background children with SIGINT ignored
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(2.0)
+        except ProcessLookupError:
+            pass
+        except subprocess.TimeoutExpired:
+            self.error(f'Command process {proc.pid} did not stop; check it')
 
     def webapp_navigate(self, nav_actions, goal):
         nav_actions.send_navigate_to_pose(goal['x'], goal['y'], goal['yaw'])
@@ -705,6 +762,8 @@ class MissionController(BasicNavigator):
                 self.cancelTask()
             elif self.state == 'ALIGNING':
                 self.stop_base()
+            elif self.state == 'RUNNING_COMMAND':
+                self.stop_command()
             elif self.trajectory_goal is not None:
                 self.trajectory_goal.cancel_goal_async()
             elif self.state == 'EXECUTING_POLICY':

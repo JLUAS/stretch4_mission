@@ -54,8 +54,8 @@ stretch4_mission_controller:
     trajectory_action: /follow_joint_trajectory
     joint_states_topic: /joint_states
 
-    # Before every navigation: lift below 0.5 m -> lift to 0.5 m, then retract the arm; at or above 0.5 m -> retract
-    # first, then lower to 0.5 m. Then the wrist stow.
+    # At the start of every step (policy, navigate, command): lift below 0.5 m -> lift to 0.5 m, then retract the
+    # arm; at or above 0.5 m -> retract first, then lower to 0.5 m. Then the wrist stow.
     # The gripper is not commanded, so an object held by the previous policy stays held.
     retract_arm_before_navigation: true
     lift_joint: lift_joint
@@ -77,8 +77,8 @@ stretch4_mission_controller:
     wrist_stow_tolerance: 0.03       # rad
     wrist_stow_duration: 4.0         # s per joint, trajectory time_from_start
 
-    # Before every policy start: raise only the lift, so stretch4_goto_pose (the policy's start pose)
-    # comes down from above. The goal is clipped to the joint max;
+    # Before every policy start: raise only the lift, so the start-pose move (stretch4_goto_pose or
+    # stretch4_pose goto, see the policy's runner) comes down from above. The goal is clipped to the joint max;
     # success = measured lift >= lift_min_height (set it above every policy's start-pose lift).
     lift_before_policy: true
     lift_up_position: 1.2            # m, commanded
@@ -97,6 +97,7 @@ stretch4_mission_controller:
     stationary_timeout: 20.0
     arm_timeout: 30.0
     lift_timeout: 30.0
-    policy_start_timeout: 150.0      # > goto_timeout (policy_runner.yaml) + start_delay + a few s
+    policy_start_timeout: 200.0      # > goto_timeout + start_delay (+ lerobot_server_timeout) in policy_runner.yaml
     policy_timeout: 300.0            # must be > every policy's max_runtime_sec (checked at mission start)
+    command_timeout: 300.0           # command steps without their own timeout_sec: stopped after this
     status_period: 2.0

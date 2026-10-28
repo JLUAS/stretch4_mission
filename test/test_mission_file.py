@@ -2,10 +2,11 @@ import pytest
 
 from stretch4_mission.mission_file import bridge_params, load_policies, longest_episode_sec, parse_goal, validate_mission
 
+RECORDER = {'runner': 'recorder', 'dataset': '', 'policy_type': ''}   # what load_policies fills in
 POLICIES = {'pick_sponge': {'task': 'Pick', 'root': '~/data/sponge', 'ckpt': '~/p/sponge.ckpt', 'run_args': '--fp16',
-                            'max_runtime_sec': 60.0},
+                            'max_runtime_sec': 60.0, **RECORDER},
             'clean_table': {'task': 'Clean', 'root': '~/data/clean', 'ckpt': '~/p/clean.ckpt', 'run_args': '',
-                            'max_runtime_sec': 120.0}}
+                            'max_runtime_sec': 120.0, **RECORDER}}
 MAPS = ['/maps/lab.yaml']
 
 
@@ -19,7 +20,7 @@ def mission(**kw):
 
 def test_validate_normalizes_steps():
     out = validate_mission(mission(), POLICIES, MAPS)
-    assert out['steps'][0] == {'policy': 'pick_sponge', 'start_pose': 'start_pose.json',
+    assert out['steps'][0] == {'type': 'policy', 'policy': 'pick_sponge', 'start_pose': 'start_pose.json',
                                'goal': {'x': 1.5, 'y': 2.0, 'yaw': -0.9273}, 'scan': ''}
     assert out['steps'][1]['start_pose'] == 'start_pose.json'
 
@@ -39,16 +40,52 @@ def test_validate_keeps_selected_start_pose():
     {'steps': [{'policy': 'pick_sponge', 'goal': {'x': 0, 'y': 0}}]},          # yaw missing
     {'steps': [{'policy': 'pick_sponge', 'goal': {'x': 0, 'y': 0, 'yaw': 0}, 'start_pose': '/p/x.json'}]},
     {'steps': [{'policy': 'pick_sponge', 'goal': {'x': 0, 'y': 0, 'yaw': 0}, 'scan': '../../etc/x.json'}]},  # path in scan name
+    {'steps': [{'type': 'dance'}]},
+    {'steps': [{'type': 'navigate', 'goal': {'x': 0, 'y': 0}}]},                 # navigate needs a full goal
+    {'steps': [{'type': 'command', 'command': '   '}]},
+    {'steps': [{'type': 'command', 'command': 'ls\nrm -rf ~'}]},                  # one line only
+    {'steps': [{'type': 'command', 'command': 'x' * 1001}]},
+    {'steps': [{'type': 'command', 'command': 'ls', 'timeout_sec': 0}]},
 ])
 def test_validate_rejects(bad):
     with pytest.raises(ValueError):
         validate_mission(mission(**bad), POLICIES, MAPS)
 
 
+def test_validate_navigate_and_command_steps():
+    data = mission(steps=[
+        {'type': 'navigate', 'goal': {'x': 1, 'y': 2, 'yaw': 0.5}, 'scan': 'scan_1.json', 'policy': 'ignored'},
+        {'type': 'command', 'command': '  python3 ~/wave.py --n 2 ', 'goal': {'x': 9}},
+        {'type': 'command', 'command': 'ls', 'timeout_sec': '30'},
+        {'policy': 'pick_sponge', 'goal': {'x': 0, 'y': 0, 'yaw': 0}}])
+    out = validate_mission(data, POLICIES, MAPS)['steps']
+    assert out[0] == {'type': 'navigate', 'goal': {'x': 1.0, 'y': 2.0, 'yaw': 0.5}, 'scan': 'scan_1.json'}
+    assert out[1] == {'type': 'command', 'command': 'python3 ~/wave.py --n 2'}   # no goal: it runs in place
+    assert out[2]['timeout_sec'] == 30.0
+    assert out[3]['type'] == 'policy'
+
+
+def test_lerobot_policies_need_dataset_type_and_seconds(tmp_path):
+    f = tmp_path / 'p.yaml'
+    good = ('policies:\n  fc:\n    runner: lerobot\n    root: ~/repos/l/policies/fc\n    ckpt: ~/policies/fc/pretrained_model\n'
+            '    dataset: ~/.cache/huggingface/lerobot/u/fc_1\n    policy_type: pi05\n    max_runtime_sec: 90\n'
+            '    run_args: --fps=30 --robot.use_base=true\n')
+    f.write_text(good)
+    assert load_policies(f)['fc']['runner'] == 'lerobot' and load_policies(f)['fc']['policy_type'] == 'pi05'
+    for bad in (good.replace('runner: lerobot', 'runner: ros'),
+                good.replace('    policy_type: pi05\n', ''),
+                good.replace('max_runtime_sec: 90', 'max_runtime_sec: auto'),             # auto reads recorder episodes
+                good.replace('--fps=30', '--task=other')):                                 # the bridge sets --task
+        f.write_text(bad)
+        with pytest.raises(ValueError):
+            load_policies(f)
+
+
 def test_bridge_params_sends_every_key():
     # every step sets all bridge parameters, so nothing is left over from the previous policy
     params = bridge_params(POLICIES['clean_table'], '/data/clean/pose_2.json')
-    assert set(params) == {'task', 'root', 'pose_file', 'ckpt', 'run_args', 'max_runtime_sec'}
+    assert set(params) == {'task', 'root', 'pose_file', 'ckpt', 'run_args', 'max_runtime_sec', 'runner', 'dataset',
+                           'policy_type'}
     assert params['pose_file'] == '/data/clean/pose_2.json'
 
 
@@ -56,7 +93,7 @@ def test_load_policies_defaults_types_and_required(tmp_path):
     f = tmp_path / 'p.yaml'
     f.write_text('policies:\n  a:\n    root: ~/data/a\n    ckpt: ~/a.ckpt\n    max_runtime_sec: 90\n')
     assert load_policies(f)['a'] == {'task': '', 'root': '~/data/a', 'ckpt': '~/a.ckpt', 'run_args': '',
-                                     'max_runtime_sec': 90.0, 'runtime_margin_sec': 10.0, 'recorded': None}
+                                     'max_runtime_sec': 90.0, 'runtime_margin_sec': 10.0, 'recorded': None, **RECORDER}
     assert isinstance(load_policies(f)['a']['max_runtime_sec'], float)  # the bridge declares it as double
     for bad in ('policies:\n  a:\n    root: ~/data/a\n',                                  # ckpt missing
                 'policies:\n  a:\n    root: ~/d\n    ckpt: ~/c\n    fps: 30\n'):          # unknown key

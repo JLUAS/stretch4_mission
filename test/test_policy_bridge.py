@@ -1,7 +1,8 @@
 import shlex
 import subprocess
 
-from stretch4_mission.policy_bridge import policy_pose_file, remote_path, run_command, venv_command
+from stretch4_mission.policy_bridge import (STOP_ORDER, lerobot_client_command, policy_pose_file, remote_path,
+                                          run_command, venv_command)
 
 
 def test_remote_command_keeps_tilde_for_the_jetson_and_quotes_the_rest():
@@ -38,3 +39,21 @@ def test_policy_pose_file_stays_in_policy_root(tmp_path):
         pass
     else:
         raise AssertionError('pose path traversal accepted')
+
+
+def test_lerobot_client_is_the_documented_command():
+    cmd = lerobot_client_command(
+        '/home/hello-robot/.cache/huggingface/lerobot/SilentSammy2001/floor_cabinet_open_20261022_105005',
+        'Floor Cabinet Open', '192.168.1.101:8080', '/home/jetson1/policies/floor_cabinet_open/pretrained_model',
+        'diffusion', '--fps=30 --actions_per_chunk=48 --policy_device=cuda --chunk_size_threshold=0.7 --robot.use_base=true')
+    assert shlex.split(cmd) == [
+        'python', '-m', 'lerobot.async_inference.robot_client', '--robot.type=stretch4', '--robot.mode=control',
+        '--robot.preprocessing_from=/home/hello-robot/.cache/huggingface/lerobot/SilentSammy2001/floor_cabinet_open_20261022_105005',
+        '--task=Floor Cabinet Open', '--server_address=192.168.1.101:8080',
+        '--pretrained_name_or_path=/home/jetson1/policies/floor_cabinet_open/pretrained_model', '--policy_type=diffusion',
+        '--fps=30', '--actions_per_chunk=48', '--policy_device=cuda', '--chunk_size_threshold=0.7', '--robot.use_base=true']
+
+
+def test_what_sends_actions_stops_first():
+    assert STOP_ORDER.index('run') < STOP_ORDER.index('exec') < STOP_ORDER.index('stream')
+    assert STOP_ORDER.index('client') < STOP_ORDER.index('server')
