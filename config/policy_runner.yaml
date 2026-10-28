@@ -1,5 +1,5 @@
 # Machine settings for policy_bridge.py, for both runners. Per-policy settings: config/policies.yaml.
-# Check these once on the robot before the first run (see README, "Policy runners").
+# Check these once on the robot before the first run (see docs/policy-steps.md, "Policy runners").
 stretch4_policy_bridge:
   ros__parameters:
     # runner: recorder (stretch4_policy_recorder)
@@ -10,6 +10,7 @@ stretch4_policy_bridge:
     jetson_repo: ~/repos/stretch4_policy_recorder     # on the Jetson, has .venv with stretch4_policy_run
     ssh_options: ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5']
     start_delay: 3.0              # s between starting stream/exec and the Jetson run
+    snapshot_cameras: [head_right, gripper]   # picture after each recorder policy, from its stream ([] = none)
     stop_timeout: 10.0            # s per stop stage (Ctrl-C, then SIGTERM)
     log_dir: ~/.ros/stretch4_mission
     # runner: lerobot (lerobot_stretch4, LeRobot async inference)

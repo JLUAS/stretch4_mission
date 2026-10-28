@@ -7,6 +7,7 @@ LeRobot's async robot_client on the robot. Stop shuts them down in STOP_ORDER. S
 task success.
 """
 
+import json
 import os
 import shlex
 import signal
@@ -26,6 +27,7 @@ from std_srvs.srv import Trigger
 REMOTE_PATTERNS = {'run': 'stretch4_policy_run --ckpt', 'server': 'stretch4_policy_server --host'}
 STOP_ORDER = ('run', 'client', 'exec', 'stream', 'server')   # whatever sends actions first, then the rest
 MAIN = {'recorder': 'run', 'lerobot': 'client'}   # its exit code is the run's last_exit_code
+SNAPSHOT = Path(__file__).with_name('snapshot.py')   # run with the recorder's Python: it decodes the stream
 
 
 def remote_path(path):
@@ -93,6 +95,8 @@ class PolicyBridge(Node):
         self.lerobot_jetson_repo = declare('lerobot_jetson_repo', '~/repos/lerobot_stretch4').value
         self.server_port = declare('lerobot_server_port', 8080).value
         self.server_timeout = declare('lerobot_server_timeout', 60.0).value
+        # recorder policies: the picture after the policy, from these stream cameras ([] = none); see snapshot.py
+        self.snapshot_cameras = list(declare('snapshot_cameras', ['head_right', 'gripper']).value)
         self.start_delay = declare('start_delay', 3.0).value
         self.stop_timeout = declare('stop_timeout', 10.0).value
         self.log_dir = Path(os.path.expanduser(declare('log_dir', '~/.ros/stretch4_mission').value))
@@ -105,6 +109,7 @@ class PolicyBridge(Node):
         self.stopping = False
         self.last_exit = None
         self.log_prefix = None
+        self.photos = None         # folder with the pictures taken when the last policy stopped
         group = ReentrantCallbackGroup()
         self.create_service(Trigger, '/policy/start', self.start_cb, callback_group=group)
         self.create_service(Trigger, '/policy/stop', self.stop_cb, callback_group=group)
@@ -153,6 +158,7 @@ class PolicyBridge(Node):
             return False, f'start pose not found: {pose_file}'
         self.log_prefix = str(self.log_dir / f"policy_{time.strftime('%Y%m%d-%H%M%S')}")
         self.last_exit = None
+        self.photos = None
         self.main = MAIN.get(prm['runner'], 'run')
         if prm['runner'] == 'lerobot':
             return self._start_lerobot(prm, pose_file)
@@ -256,7 +262,8 @@ class PolicyBridge(Node):
             response.message = (f'{state}; running={alive}; elapsed={time.monotonic() - self.started_at:.1f}s; '
                                 f'logs={self.log_prefix}_*.log; does NOT imply task success')
         else:
-            response.message = f'STOPPED; last_exit_code={self.last_exit}; logs={self.log_prefix}_*.log'
+            response.message = (f'STOPPED; last_exit_code={self.last_exit}; logs={self.log_prefix}_*.log'
+                                + (f'; photos={self.photos}' if self.photos else ''))
         return response
 
     # ---------- stop ----------
@@ -285,9 +292,29 @@ class PolicyBridge(Node):
         while time.monotonic() < end and any(self.procs[n].poll() is None for n in names if n in self.procs):
             time.sleep(0.2)
 
-    def _shutdown(self):
+    def _snapshot(self):
+        """Pictures after a recorder policy, from its still-running stream: exec has stopped, so the robot is still."""
+        stream = self.procs.get('stream')
+        if not self.snapshot_cameras or stream is None or stream.poll() is not None or self.started_at is None:
+            return
+        out = self.log_dir / 'snapshots' / Path(self.log_prefix).name
+        python = Path(os.path.expanduser(self.repo)) / '.venv' / 'bin' / 'python'
+        try:
+            proc = subprocess.run([str(python), str(SNAPSHOT), '--out', str(out), '--cameras', *self.snapshot_cameras],
+                                  capture_output=True, text=True, timeout=20)
+            result = json.loads(proc.stdout.strip().splitlines()[-1])
+        except (OSError, subprocess.TimeoutExpired, IndexError, ValueError) as exc:
+            result = {'error': str(exc)}
+        if 'error' in result:
+            self.get_logger().warning(f"no picture after the policy: {result['error']}")
+        else:
+            self.photos = str(out)
+
+    def _shutdown(self, snapshot=True):
         """In STOP_ORDER: Ctrl-C, then SIGTERM. Jetson processes by pkill there, local ones by process group."""
         for name in STOP_ORDER:
+            if name == 'stream' and snapshot:
+                self._snapshot()
             proc = self.procs.get(name)
             if proc is None or proc.poll() is not None:
                 continue
@@ -323,7 +350,7 @@ def main(args=None):
     finally:
         if node.running():
             node.get_logger().warning('Bridge exiting: stopping the running policy')
-            node._shutdown()
+            node._shutdown(snapshot=False)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

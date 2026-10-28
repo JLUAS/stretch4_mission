@@ -39,7 +39,7 @@ from tf_transformations import euler_from_quaternion, quaternion_from_euler
 from stretch4_mission.mission_file import (AUTO, CONFIGS_FILE, NAME_RE, POSE_RE, load_configs, load_policies,
                                            parse_goal, recorded_runtime, save_recorded_runtimes, stored,
                                            validate_config, validate_mission, write_config)
-from stretch4_mission.planner import build_catalog, plan_to_mission
+from stretch4_mission.planner import build_catalog, describe_step, plan_to_mission, suggestions
 from stretch4_mission.scan_align import base_points
 
 INDEX_HTML = Path(__file__).with_name('web') / 'index.html'
@@ -178,6 +178,10 @@ class MissionUI(Node):
         self.amcl_count = 0
         self.localizing = False
         self.localize_text = 'Not localized'
+        self.op = {'state': 'idle', 'request': '', 'message': '', 'steps': [], 'mission': None}   # Operator tab
+        self.op_cancel = False
+        self.localize_cancel = False   # Operator Stop during localization: no further spin
+        self.spin_goal = None          # the spin in progress, so Stop can cancel it
 
         self.create_subscription(String, 'mission/state', self._state_cb, LATCHED)
         self.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', self._amcl_cb, LATCHED)
@@ -515,6 +519,7 @@ class MissionUI(Node):
             if self.localizing:
                 raise RuntimeError('Already localizing')
             self.localizing = True
+            self.localize_cancel = False
         threading.Thread(target=self._localize, daemon=True).start()
 
     def _localize(self):
@@ -526,7 +531,7 @@ class MissionUI(Node):
                 for _ in range(5):  # AMCL updates without motion, then the spin gives it new views
                     self._call(self.nomotion, 'request_nomotion_update')
                     time.sleep(0.4)
-                if self.amcl_count > count and self.localized():
+                if self.amcl_count > count and self.localized() or self.localize_cancel:
                     break
                 self.localize_text = f'Global localization: spinning in place ({i + 1}/{self.localize_spins})'
                 self._spin(2 * math.pi)
@@ -558,10 +563,13 @@ class MissionUI(Node):
         future = self.spin_client.send_goal_async(goal)
         if not wait_future(future, 10.0) or not future.result().accepted:
             raise RuntimeError('Spin rejected')
-        result = future.result().get_result_async()
-        if not wait_future(result, 70.0):
-            future.result().cancel_goal_async()
-            raise RuntimeError('Spin did not finish')
+        self.spin_goal = future.result()
+        try:
+            if not wait_future(self.spin_goal.get_result_async(), 70.0):
+                self.spin_goal.cancel_goal_async()
+                raise RuntimeError('Spin did not finish')
+        finally:
+            self.spin_goal = None
 
     def _publish_initial_pose(self, x, y, yaw):
         msg = PoseWithCovarianceStamped()
@@ -610,12 +618,14 @@ class MissionUI(Node):
                                 f"mission_file:={self.missions_dir / f'{name}.yaml'}",
                                 f'policies_file:={self.policies_file}', *self.launch_args], name)
 
-    def ask(self, text):
-        """Text request: Claude picks steps of the saved missions on this map (planner.py); saved as ask_<time>, started."""
+    def plan(self, text, nav_map):
+        """Text request -> Claude's plan from the configs and missions on nav_map, saved as ask_<time> (not started).
+
+        -> {'message', 'mission' (None when Claude found no plan), 'plan'}.
+        """
         text = str(text or '').strip()
         if not 1 <= len(text) <= 500:
             raise ValueError('Type a request (up to 500 characters)')
-        nav_map = self._check_ready()   # before paying for a plan the robot could not run
         here = lambda m: os.path.realpath(m) == os.path.realpath(nav_map)   # noqa: E731
         same_map = [m for m in self.missions() if 'error' not in m and here(m['map'])]
         configs = {n: c for n, c in self.configs()[0].items() if here(c['map'])}
@@ -625,7 +635,7 @@ class MissionUI(Node):
                                'or missions first')
         python = os.path.expanduser(self.planner_python)
         if not os.path.isfile(python):
-            raise RuntimeError(f'{python} not found (README: "Text requests")')
+            raise RuntimeError(f'{python} not found: set up the planner venv (docs/installation.md, step 5)')
         request = {'text': text, 'model': self.planner_model,
                    'catalog': [{'id': c['id'], 'description': c['description']} for c in catalog]}
         try:
@@ -642,9 +652,132 @@ class MissionUI(Node):
         if not result['plan']:
             return {'message': result['message'], 'mission': None, 'plan': []}
         name = f"ask_{time.strftime('%Y%m%d_%H%M%S')}"
-        self.save_mission(plan_to_mission(result['plan'], catalog, name, nav_map))
-        self.start_mission(name)
-        return {'message': result['message'], 'mission': name, 'plan': result['plan']}
+        mission = plan_to_mission(result['plan'], catalog, name, nav_map)
+        self.save_mission(mission)
+        steps = validate_mission(mission, self.policies(), configs=configs)['steps']
+        return {'message': result['message'], 'mission': name, 'plan': result['plan'],
+                'tasks': [describe_step(st, self.policies(), configs) for st in steps]}
+
+    def ask(self, text):
+        """Missions tab "Ask & run": plan on the map Nav2 runs and start at once; the robot must already be ready."""
+        nav_map = self._check_ready()   # before paying for a plan the robot could not run
+        result = self.plan(text, nav_map)
+        if result['mission']:
+            self.start_mission(result['mission'])
+        return result
+
+    # ---------- Operator tab: a sentence in, the robot made ready and the mission run ----------
+
+    def operator_map(self):
+        """The map Nav2 runs; with Nav2 off, the map with the most policy configs and missions (default map on a tie)."""
+        if self.healthy('nav2') and self.current_map():
+            return self.current_map()
+        count = collections.Counter(c['map'] for c in self.configs()[0].values())
+        count.update(m['map'] for m in self.missions() if 'error' not in m)
+        if not count:
+            raise RuntimeError('Nothing is set up yet: add policy configs in the Policy configs tab first')
+        best = max(count.values())
+        return self.default_map if count.get(self.default_map) == best else max(count, key=count.get)
+
+    def operate(self, text):
+        """Operator tab: plan, start what is off, localize if needed, run; progress in self.op (status())."""
+        if self.op['state'] in ('planning', 'starting', 'localizing', 'running'):
+            raise RuntimeError('The robot is still working on the last request; wait or press Stop')
+        if self.mission.running():
+            raise RuntimeError(f'Mission {self.mission.label} is running; wait or press Stop')
+        self.op = {'state': 'planning', 'request': str(text or '').strip(), 'message': '', 'steps': [], 'mission': None}
+        self.op_cancel = False
+        threading.Thread(target=self._operate, args=(text,), daemon=True).start()
+
+    def _operate(self, text, component_timeout=120.0):
+        op = self.op
+
+        def step(text):
+            for st in op['steps']:
+                st['status'] = 'done' if st['status'] == 'active' else st['status']
+            op['steps'].append({'text': text, 'status': 'active'})
+
+        def wait(done, timeout, what):
+            end = time.monotonic() + timeout
+            while not done():
+                if self.op_cancel:
+                    raise RuntimeError('Stopped by the operator')
+                if time.monotonic() > end:
+                    raise RuntimeError(f'{what} did not get ready in {timeout:.0f} s')
+                time.sleep(0.5)
+
+        try:
+            step('Understanding the request')
+            nav_map = self.operator_map()
+            result = self.plan(text, nav_map)
+            op['message'] = result['message']
+            if not result['mission']:   # Claude found no complete plan: nothing starts, nothing moves
+                op['steps'][-1]['status'] = 'done'
+                op['state'] = 'cannot'
+                return
+            op['mission'], op['tasks'] = result['mission'], result['tasks']
+            op['state'] = 'starting'
+            for name, label, _ in COMPONENTS:   # in order: Nav2 needs the driver and the lidars
+                if self.healthy(name):
+                    continue
+                step(f'Starting {label}')
+                if self.component_status(name)['startable']:
+                    self.start_component(name, nav_map)
+                wait(lambda name=name: self.healthy(name), component_timeout, label)
+            if not self.localized():
+                op['state'] = 'localizing'
+                step('Finding where the robot is (it turns in place)')
+                if not self.localizing:
+                    self.localize()
+                wait(lambda: not self.localizing, 180.0, 'Localization')
+                if not self.localized():
+                    raise RuntimeError(self.localize_text)
+            if self.op_cancel:
+                raise RuntimeError('Stopped by the operator')
+            op['state'] = 'running'
+            step('Doing the task')
+            self.start_mission(result['mission'])
+            wait(lambda: self.trace is not None and self.trace.get('mission') == result['mission'], 30.0, 'The mission')
+            while self.mission.running():
+                time.sleep(0.5)
+            trace = self.trace or {}
+            if trace.get('state') != 'COMPLETED':
+                raise RuntimeError(trace.get('detail') or 'The mission stopped before the end')
+            op['steps'][-1]['status'] = 'done'
+            op['state'] = 'done'
+        except (RuntimeError, ValueError, OSError) as exc:
+            if op['steps']:
+                op['steps'][-1]['status'] = 'failed'
+            op['state'] = 'stopped' if self.op_cancel else 'failed'
+            op['error'] = str(exc)
+            self.get_logger().warning(f"Operator request {op['request']!r}: {exc}")
+
+    def operator_suggestions(self):
+        """Operator tab: a few requests this robot can do, from the configs and missions on the map it would use."""
+        try:
+            nav_map = self.operator_map()
+        except RuntimeError:
+            return []
+        here = lambda m: os.path.realpath(m) == os.path.realpath(nav_map)   # noqa: E731
+        return suggestions(self.policies(), {n: c for n, c in self.configs()[0].items() if here(c['map'])},
+                           [m for m in self.missions() if 'error' not in m and here(m['map'])])
+
+    def snapshot(self, folder, camera):
+        """A picture taken after a policy (policy_bridge, snapshot.py), only from the snapshots folder."""
+        base = (self.log_dir / 'snapshots').resolve()
+        path = (base / str(folder) / f'{camera}.jpg').resolve()
+        if path.parent.parent != base or not NAME_RE.match(str(camera)) or not path.is_file():
+            raise ValueError('unknown picture')
+        return path.read_bytes()
+
+    def operator_stop(self):
+        """Operator tab Stop: no further step starts; a running mission gets Ctrl-C."""
+        self.op_cancel = True
+        if self.localizing:
+            self.localize_cancel = True
+            if self.spin_goal is not None:
+                self.spin_goal.cancel_goal_async()   # the robot stops turning
+        return self.stop_mission() if self.mission.running() else 'Stopping'
 
     def goto_pose(self, body):
         """Stow the arm, then drive to {x, y, yaw} (map frame, on the map Nav2 runs) with the mission controller."""
@@ -672,7 +805,8 @@ class MissionUI(Node):
                 'localization': {'busy': self.localizing, 'text': self.localize_text,
                                  'localized': self.localized(),
                                  'sigma_xy': a and round(a[1], 3), 'sigma_yaw': a and round(a[2], 3)},
-                'log': proc.tail(), 'log_file': proc.info()['log_file'], 'launch_args': self.launch_args}
+                'log': proc.tail(), 'log_file': proc.info()['log_file'], 'launch_args': self.launch_args,
+                'operator': self.op}
 
     def shutdown_children(self):
         for proc in (self.mission, *reversed(list(self.procs.values()))):
@@ -716,6 +850,8 @@ def make_handler(ui):
                     return self._send(200, ui.status(q.get('log', 'mission')))
                 if url.path == '/api/missions':
                     return self._send(200, ui.missions())
+                if url.path == '/api/operator/suggestions':
+                    return self._send(200, ui.operator_suggestions())
                 if url.path == '/api/configs':
                     configs, errors = ui.configs()
                     return self._send(200, {'configs': configs, 'errors': errors})
@@ -733,6 +869,8 @@ def make_handler(ui):
                     meta, _ = ui.map_meta(q.get('path', ''))
                     keys = ('resolution', 'origin', 'negate', 'occupied_thresh', 'free_thresh', 'mode')
                     return self._send(200, {k: meta.get(k) for k in keys})
+                if url.path == '/api/snapshot':
+                    return self._send(200, ui.snapshot(q.get('folder', ''), q.get('camera', '')), 'image/jpeg')
                 if url.path == '/api/map_image':
                     _, image = ui.map_meta(q.get('path', ''))  # validated: only images of listed maps
                     ctype = 'image/png' if image.suffix.lower() == '.png' else 'application/octet-stream'
@@ -765,6 +903,8 @@ def make_handler(ui):
                     '/api/stop': lambda: {'message': ui.stop_mission()},
                     '/api/goto': lambda: (ui.goto_pose(body), {'started': 'Go to pose'})[1],
                     '/api/ask': lambda: ui.ask(body.get('text')),
+                    '/api/operator': lambda: (ui.operate(body.get('text')), {'message': 'Working on it'})[1],
+                    '/api/operator/stop': lambda: {'message': ui.operator_stop()},
                     '/api/configs': lambda: {'message': ui.save_config(body)},
                     '/api/configs/delete': lambda: {'message': ui.delete_config(str(body.get('name', '')))},
                 }

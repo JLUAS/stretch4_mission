@@ -8,7 +8,7 @@
 #     Jetson: stretch4_policy_server
 #     robot:  python -m lerobot.async_inference.robot_client ... <run_args>
 # The mission sets these keys on the bridge at every step. Machine settings: config/policy_runner.yaml.
-# sync_policies (run by scripts/run_ui_robot.sh) adds new policies at the end of this file; see README.
+# sync_policies (run by scripts/run_ui_robot.sh) adds new policies at the end of this file; see docs/policy-steps.md.
 # max_runtime_sec: seconds, or auto = the longest episode recorded in <root> + runtime_margin_sec (worked out when
 # the mission starts, from each episode_*/records.jsonl; keep it below policy_timeout in config/mission.yaml).
 # runtime_margin_sec here is for every auto policy; a policy can set its own to override it.

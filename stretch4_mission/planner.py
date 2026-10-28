@@ -10,7 +10,7 @@ plan as a mission (ask_<time>) and starts it.
     <planner venv>/bin/python planner.py < {"text": ..., "catalog": [...], "model": ...}
         -> {"plan": [ids], "message": "..."} on the last line of stdout; errors: {"error": "..."} and exit code 1
 
-Only ask() needs the anthropic SDK, so this runs with its own venv (README: "Text requests"); the rest is imported
+Only ask() needs the anthropic SDK, so this runs with its own venv (docs/installation.md, step 5); the rest is imported
 by the UI.
 """
 
@@ -36,8 +36,8 @@ nothing is done yet unless the request says so. Do not add steps nothing needs.
 
 Plan all or nothing. If any part of the request cannot be done with the catalog, or the request is unclear, answer \
 with an empty plan and say in "message" that the mission cannot be completed and which part the robot cannot do: the \
-robot never runs part of a request; this includes a step the request needs that the catalog cannot provide. \
-Otherwise use "message" to describe the plan in one or two sentences, saying why you added any step the request did \
+robot never runs part of a request; this includes a step the request needs that the catalog cannot provide. In \
+that case also name two or three things from the catalog the robot can do instead, in plain words. Otherwise use "message" to describe the plan in one or two sentences, saying why you added any step the request did \
 not name. Write "message" in the language of the request."""
 
 
@@ -78,6 +78,33 @@ def build_catalog(missions, policies, configs):
         catalog.append({'id': f"mission:{m['name']}", 'description': f"Whole mission {m['name']}: " + '; then '.join(parts),
                         'steps': m['steps']})
     return catalog
+
+
+def describe_step(step, policies, configs):
+    """A mission step in words a person understands -> {'title', 'where'}: what it does, and where it goes first.
+
+    From the operator's own data (the policy's task in policies.yaml, the config's or step's label), so the Operator
+    tab shows real progress, never invented text.
+    """
+    cfg = configs.get(step.get('config'), {})
+    where = step.get('label') or cfg.get('label') or (step.get('config') or '').replace('_', ' ')
+    if step['type'] == 'policy':
+        task = policies.get(step['policy'], {}).get('task') or step['policy'].replace('_', ' ')
+        return {'title': task, 'where': where or 'the station'}
+    if step['type'] == 'navigate':
+        return {'title': f"Going to {where or 'the next spot'}", 'where': where or 'the next spot'}
+    return {'title': step.get('label') or 'Running a command', 'where': ''}
+
+
+def suggestions(policies, configs, missions, limit=4):
+    """Example requests for the Operator tab, from what is set up on the map: the configs' tasks, then missions."""
+    task = lambda c: policies.get(c['policy'], {}).get('task') or c['policy'].replace('_', ' ')   # noqa: E731
+    tasks = [task(c) for c in configs.values()]
+    # the task alone reads best; the place only tells apart one policy set up at two stations
+    out = [f"{task(c)} at the {c['label']}" if tasks.count(task(c)) > 1 and c.get('label') else task(c)
+           for c in configs.values()]
+    out += [f"Run the {m['name'].replace('_', ' ')} mission" for m in missions if not m['name'].startswith('ask_')]
+    return list(dict.fromkeys(out))[:limit]
 
 
 def plan_schema(ids):

@@ -653,6 +653,9 @@ class MissionController(BasicNavigator):
                 result = self.run_policy(i, name, step_params[i])
                 # Not task success: only that the policy process ended.
                 self.trace.result(i, result)
+                photos = dict(kv.split('=', 1) for kv in result.split('; ') if '=' in kv).get('photos')
+                if photos:   # the bridge's pictures after the policy (recorder runner), for the Operator view
+                    self.trace.data['steps'][i]['photos'] = Path(photos).name
 
             self.set_state('COMPLETED', detail='all steps finished. '
                                                'Verify the tasks physically; this is not task success.')

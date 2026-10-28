@@ -14,7 +14,9 @@
             --accent:#5C9BFF; --pink-ink:#FBCBDA; --ok:#4CC38A; --bad:#FF7A7A; --warn:#F2B14C; --shadow:none; }
   }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:17px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--text); font:17px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         min-height:100vh; display:flex; flex-direction:column; }
+  body > main { flex:1 0 auto; align-content:start; }
 
   /* ---------- header ---------- */
   header { background:var(--navy); color:#fff; border-bottom:4px solid var(--pink); }
@@ -160,7 +162,50 @@
   .tabs { display:flex; gap:6px; }
   .tabs button { background:rgba(255,255,255,.08); color:#B9C8D6; border:1px solid transparent; }
   .tabs button[aria-pressed="true"] { background:var(--pink); color:var(--navy); font-weight:600; }
-  body[data-tab="configs"] .tab-missions, body:not([data-tab="configs"]) .tab-configs { display:none; }
+  body:not([data-tab="missions"]) .tab-missions, body:not([data-tab="configs"]) .tab-configs,
+  body:not([data-tab="operator"]) .tab-operator,
+  body[data-tab="operator"] main > section:not(.tab-operator), body[data-tab="operator"] .flow { display:none; }
+  /* Operator view: a light, calm end-user design (its own palette, whatever the system theme) */
+  body[data-tab="operator"] { --bg:#F7F9FA; --card:#FFFFFF; --text:#17313D; --muted:#5B6F79; --line:#E2E8EC; --chip:#EEF3F5;
+                              --field:#FFFFFF; --accent:#2563EB; --ok:#2C806B; --bad:#D64545; --warn:#B7791F; --shadow:none; }
+  body[data-tab="operator"] header { background:var(--card); color:var(--text); border-bottom:1px solid var(--line); }
+  body[data-tab="operator"] .brand .sub { display:none; }
+  body[data-tab="operator"] .tabs button { background:var(--chip); color:var(--muted); }
+  body[data-tab="operator"] .tabs button[aria-pressed="true"] { background:var(--text); color:#fff; }
+  body[data-tab="operator"] footer { background:transparent; color:var(--muted); border-top:1px solid var(--line); font-size:13px; }
+  body[data-tab="operator"] footer strong { color:var(--muted); }
+  body[data-tab="operator"] main > section.tab-operator { background:transparent; border:0; box-shadow:none; padding:8px 0; }
+  .op { max-width:760px; margin:0 auto; width:100%; display:grid; gap:20px; }
+  .op-status { display:flex; gap:14px; align-items:center; padding:18px 20px; border-radius:16px; background:var(--card); border:1px solid var(--line); }
+  .op-status .dot { width:14px; height:14px; border-radius:50%; background:var(--ok); flex:none; }
+  .op-status.working .dot { background:var(--accent); animation:op-pulse 1.6s ease-in-out infinite; }
+  .op-status.help .dot { background:var(--bad); } .op-status.done .dot { background:var(--ok); }
+  @media (prefers-reduced-motion: reduce) { .op-status.working .dot { animation:none; } }
+  @keyframes op-pulse { 50% { opacity:.35; } }
+  .op-status h2 { margin:0; font-size:24px; } .op-status p { margin:2px 0 0; color:var(--muted); }
+  .op-card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; display:grid; gap:14px; }
+  .op form { display:flex; gap:10px; flex-wrap:wrap; }
+  .op form input { flex:1; min-width:200px; font-size:20px; padding:14px 16px; border-radius:12px; }
+  .op form button { font-size:18px; padding:12px 24px; border-radius:12px; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chips button { border-radius:999px; background:var(--chip); border:1px solid var(--line); color:var(--text); font-size:15px; padding:6px 14px; }
+  .op-label { font-size:13px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+  .op-request { margin:2px 0 0; font-size:20px; }
+  .op-steps { list-style:none; margin:0; padding:0; display:grid; gap:4px; }
+  .op-steps li { display:grid; grid-template-columns:28px minmax(0, 1fr); gap:2px 12px; align-items:center; padding:10px 0; border-top:1px solid var(--line); }
+  .op-steps li:first-child { border-top:0; }
+  .op-steps .ic { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; font-size:14px; border:2px solid var(--line); color:var(--muted); }
+  .op-steps .done .ic { background:var(--ok); border-color:var(--ok); color:#fff; }
+  .op-steps .now .ic { border-color:var(--accent); color:var(--accent); }
+  .op-steps .failed .ic { background:var(--bad); border-color:var(--bad); color:#fff; }
+  .op-steps .what { font-size:18px; } .op-steps .next .what { color:var(--muted); }
+  .op-steps .state { grid-column:2; font-size:14px; color:var(--muted); } .op-steps .now .state { color:var(--accent); }
+  .op-pics { grid-column:2; display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; }
+  .op-pics figure { margin:0; } .op-pics img { display:block; width:240px; max-width:100%; border-radius:10px; border:1px solid var(--line); }
+  .op-pics figcaption { font-size:13px; color:var(--muted); margin-top:2px; }
+  .op-reply { font-size:18px; padding:14px 16px; border-radius:12px; background:var(--chip); }
+  .op-stop { width:100%; font-size:20px; padding:14px; border-radius:12px; background:var(--bad); border-color:var(--bad); color:#fff; }
+  .op-note { font-size:13px; color:var(--muted); margin:0; text-align:center; }
   .runargs input { font-family:ui-monospace, monospace; }
   .runargs .cmd { display:block; margin-top:6px; padding:6px 8px; overflow-wrap:anywhere; }
   .s-scan { margin-top:8px; padding:8px 10px; border-radius:8px; background:var(--chip); }
@@ -176,13 +221,14 @@
         max-height:340px; overflow:auto; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
 </style>
 </head>
-<body>
+<body data-tab="missions">
 <header>
   <div class="bar">
     <div class="brand">
       <div><h1>Stretch 4 Missions</h1><div class="sub">Nav2 + trained policies · mission control</div></div>
     </div>
     <div class="tabs" role="group" aria-label="View">
+      <button type="button" data-tab="operator" aria-pressed="false">Operator</button>
       <button type="button" data-tab="missions" aria-pressed="true">Missions</button>
       <button type="button" data-tab="configs" aria-pressed="false">Policy configs</button>
     </div>
@@ -195,7 +241,31 @@
 </header>
 
 <main>
-  <!-- 1. Robot -->
+  <!-- Operator: one sentence in; the robot gets itself ready and does it -->
+  <section class="full tab-operator" aria-labelledby="op-title">
+    <div class="op">
+      <div id="op-status" class="op-status" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        <div><h2 id="op-title">Ready to help</h2><p id="op-sub">Tell Stretch what to do.</p></div>
+      </div>
+      <div id="op-ask" class="op-card">
+        <form id="op-form">
+          <input id="op-text" maxlength="500" autocomplete="off" placeholder="What should Stretch do?" aria-label="What should Stretch do?">
+          <button id="op-send" class="primary">Send</button>
+        </form>
+        <div id="op-suggest" hidden><div class="op-label">Stretch can</div><div id="op-chips" class="chips"></div></div>
+      </div>
+      <div id="op-work" class="op-card" hidden>
+        <div><div class="op-label">Your request</div><p id="op-request" class="op-request"></p></div>
+        <ol id="op-steps" class="op-steps" aria-label="What Stretch is doing"></ol>
+        <div id="op-reply" class="op-reply" hidden></div>
+        <button id="op-stop" type="button" class="op-stop" hidden>■ Stop task</button>
+        <p id="op-stop-note" class="op-note" hidden>A software stop. It does not replace the robot's emergency stop button.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1. Robot -->  <!-- 1. Robot -->
   <section class="robot" aria-labelledby="h-nav">
     <h2 id="h-nav"><span class="num">1</span>Robot <span id="nav-pill" class="pill grow">Nav2 off</span></h2>
     <div class="field">
@@ -610,6 +680,7 @@ async function refreshStatus() {
   renderFlow();
   renderGoto();
   renderStateMachine();
+  renderOperator();
   drawMap();
 }
 
@@ -669,6 +740,100 @@ async function deleteMission(name) {
   try { await api('/api/missions/delete', { name }); if (selected === name) selected = null; refreshMissions(); }
   catch (e) { say($('m-msg'), e.message, false); }
 }
+
+// ---------- operator tab ----------
+const OP_ACTIVE = ['planning', 'starting', 'localizing', 'running'];
+// what a person sees: the robot's status, not execution states
+const OP_STATUS = {
+  idle: ['ready', 'Ready to help', 'Tell Stretch what to do.'],
+  planning: ['working', 'Working on your task', 'Understanding your request…'],
+  starting: ['working', 'Working on your task', 'Getting ready…'],
+  localizing: ['working', 'Working on your task', 'Getting ready…'],
+  running: ['working', 'Working on your task', 'Doing the task.'],
+  done: ['done', 'Task complete', 'Every step finished. Please check the result: Stretch cannot check it yet.'],
+  cannot: ['help', 'Needs your help', 'Stretch cannot do this request.'],
+  failed: ['help', 'Needs your help', 'Stretch could not finish the task.'],
+  stopped: ['help', 'Task stopped', 'Stopped by you. Stretch did not finish the task.'],
+};
+// the current step's phase, in words: what the robot is doing right now
+const NOW = (p, t) => ({ RETRACTING_ARM: 'Tucking in its arm', CHECKING_POSE: `Heading to the ${t.where}`, NAVIGATING: `Heading to the ${t.where}`,
+  ALIGNING: `Lining up at the ${t.where}`, PREPARING_POLICY: `Getting ready to ${t.title.toLowerCase()}` }[p] || t.title);
+let opSuggested = null;
+async function loadSuggestions() {
+  try { opSuggested = await api('/api/operator/suggestions'); } catch (e) { opSuggested = []; }
+  $('op-chips').replaceChildren(...opSuggested.map((t) => { const b = el('button', '', t); b.type = 'button';
+    b.onclick = () => { $('op-text').value = t; $('op-text').focus(); }; return b; }));
+  $('op-suggest').hidden = !opSuggested.length;
+}
+function opStep(status, what, state, photos) {
+  const icon = { done: '✓', now: '●', next: '', failed: '✕' }[status];
+  const li = el('li', status); const ic = el('span', 'ic', icon); ic.setAttribute('aria-hidden', 'true');
+  li.append(ic, el('span', 'what', what), el('span', 'state', state));
+  if (photos) {   // pictures taken when a recorder policy stopped (policy_bridge): how it looks after this step
+    const pics = el('div', 'op-pics');
+    for (const [cam, label] of [['head_right', 'Head camera'], ['gripper', 'Gripper camera']]) {
+      const f = el('figure'), img = el('img');
+      img.src = `/api/snapshot?folder=${encodeURIComponent(photos)}&camera=${cam}`;
+      img.alt = `${label}, after this step`; img.onerror = () => f.remove();
+      f.append(img, el('figcaption', '', `After · ${label}`)); pics.append(f);
+    }
+    li.append(pics);
+  }
+  return li;
+}
+let opShown = '';   // redraw the steps only when they change: the pictures do not reload every second
+let opLastState = null;
+function renderOperator() {
+  const op = S?.operator; if (!op) return;
+  const active = OP_ACTIVE.includes(op.state);
+  const [kind, title, sub] = OP_STATUS[op.state] || OP_STATUS.idle;
+  $('op-status').className = `op-status ${kind}`;
+  setText('op-title', title);
+  setText('op-sub', op.state === 'failed' ? `${sub} ${op.error}` : sub);
+  $('op-ask').hidden = active;
+  $('op-send').disabled = active;
+  $('op-work').hidden = op.state === 'idle';
+  setText('op-request', op.request ? `“${op.request}”` : '');
+  $('op-stop').hidden = $('op-stop-note').hidden = !active;
+  // the answer: Claude's plan in words, or why it cannot (with what it can do instead)
+  $('op-reply').hidden = !op.message || op.state === 'planning';
+  setText('op-reply', op.message || '');
+  // steps: understanding, getting ready, then each mission step from the live mission state (never estimated)
+  const setup = op.steps.filter((st) => st.text !== 'Doing the task');
+  const und = setup[0], ready = setup.slice(1);
+  const items = [];
+  if (und) items.push(opStep(und.status === 'active' ? 'now' : und.status, 'Understanding your request',
+    und.status === 'active' ? 'Working on this now' : und.status === 'failed' ? 'Did not work' : 'Completed'));
+  if (ready.length) { const cur = ready[ready.length - 1];
+    const st = cur.status === 'active' ? 'now' : cur.status === 'failed' ? 'failed' : 'done';
+    items.push(opStep(st, 'Getting ready', st === 'now' ? `${cur.text}…` : st === 'failed' ? `${cur.text}: did not work` : 'Completed')); }
+  const t = S.trace && S.trace.mission === op.mission ? S.trace : null;
+  (op.tasks || []).forEach((task, i) => {
+    const doing = op.state === 'running' && t && t.step === i;
+    const finished = op.state === 'done' || (t && (t.state === 'COMPLETED' || (t.step ?? -1) > i));
+    const failed = ['failed', 'stopped'].includes(op.state) && t && t.step === i;
+    const photos = t?.steps?.[i]?.photos;
+    items.push(failed ? opStep('failed', task.title, 'Did not finish', photos)
+      : finished ? opStep('done', task.title, 'Completed', photos)
+      : doing ? opStep('now', NOW(t.state, task), 'Working on this now')
+      : opStep('next', task.title, 'Up next'));
+  });
+  const shown = items.map((li) => li.outerHTML).join('');
+  if (shown !== opShown) { opShown = shown; $('op-steps').replaceChildren(...items); }
+  if (opLastState !== op.state && !active && opLastState !== null) loadSuggestions();   // the setup may have changed
+  opLastState = op.state;
+}
+$('op-form').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const text = $('op-text').value.trim();
+  if (!text) return;
+  try { await api('/api/operator', { text }); $('op-text').value = ''; refreshStatus(); }
+  catch (e) { $('op-status').className = 'op-status help'; setText('op-title', 'Needs your help'); setText('op-sub', e.message); }
+};
+$('op-stop').onclick = async () => {
+  try { await api('/api/operator/stop', {}); refreshStatus(); }
+  catch (e) { setText('op-sub', e.message); }
+};
 
 // ---------- shared form fields ----------
 const lab = (text, input) => { const d = el('div'); const l = el('label', '', text); const id = 'i' + Math.random().toString(36).slice(2); input.id = id; l.htmlFor = id; d.append(l, input); return d; };
@@ -915,7 +1080,7 @@ function loadIntoForm(m) {
   $('f-name').value = m ? m.name : '';
   if (m) $('f-map').value = m.map; else if (S?.nav?.map) $('f-map').value = S.nav.map;
   $('steps').replaceChildren();
-  (m ? m.steps : [{}]).forEach(addStep);
+  (m ? m.steps : [{}]).forEach((step) => addStep(step));   // not forEach(addStep): its index would be `replacing`
   $('f-name').focus({ preventScroll: true });
   drawMap();
 }
@@ -1013,6 +1178,7 @@ $('log-which').onchange = refreshStatus;
   await refreshStatus();  // first, so a new mission's first step starts at the robot's pose
   loadIntoForm(null);
   openConfig(null);
+  loadSuggestions();
   let tab = 'missions';
   try { tab = localStorage.getItem('tab') || tab; } catch (e) { /* default tab */ }
   setTab(tab);
