@@ -56,11 +56,11 @@ Node `/stretch4_policy_bridge`, started with the robot parts by `navigation.laun
 
 ## mission_ui
 
-The web UI (HTTP on `127.0.0.1:8090`). It starts `navigation.launch.py` once per robot part and `mission.launch.py` per mission.
+The web UI (HTTP on `127.0.0.1:8090`). It starts `navigation.launch.py` once per robot part and `mission.launch.py` per mission. Without the admin login (`set_admin_password`, `~/.config/stretch4_mission/admin_password`) only the Operator routes answer; connections from the robot itself are admin; addresses outside private networks get `403` ([Operators and admins](web-ui.md#operators-and-admins)).
 
 | Parameter | Type | Description |
 |---|---|---|
-| `host`, `port` | string, int | HTTP address (default `127.0.0.1`, 8090) |
+| `host`, `port` | string, int | HTTP address (default `127.0.0.1`, 8090; `0.0.0.0` for operators on the local network) |
 | `missions_dir` | string | Mission files and `scans/` |
 | `maps_dir`, `default_map` | string | Map folder and the preselected map |
 | `policies_file` | string | Policy library |

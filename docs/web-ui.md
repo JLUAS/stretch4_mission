@@ -12,9 +12,28 @@ Start it on the robot (the script loads the same environment as `~/.bashrc`, so 
 ~/ament_ws/src/stretch4_mission/scripts/run_ui_robot.sh
 ```
 
-The script uses this robot's ID, adds new policies to `config/policies.yaml` (`sync_policies`), preselects `$HELLO_FLEET_PATH/maps/test.yaml` and turns RViz off. The UI listens only on the robot itself (`127.0.0.1:8090`); reach it through the SSH tunnel from the [Quickstart](../README.md#quickstart). Extra arguments go to the node: for example `-p host:=0.0.0.0` serves the whole network at `http://<robot-ip>:8090`.
+The script uses this robot's ID, adds new policies to `config/policies.yaml` (`sync_policies`), preselects `$HELLO_FLEET_PATH/maps/test.yaml` and turns RViz off. The UI listens only on the robot itself (`127.0.0.1:8090`); reach it through the SSH tunnel from the [Quickstart](../README.md#quickstart). Extra arguments go to the node: for example `-p host:=0.0.0.0` serves the local network at `http://<robot-ip>:8090`.
 
-**NOTE**: The UI has no login. Anyone who can reach its port can move the robot and, with command steps, run any shell command on it as the robot's user. Keep the default `host` (`127.0.0.1`) and use an SSH tunnel, or use it only on a trusted lab network.
+### Operators and admins
+
+On a site, the people who use the robot should not be able to change what it does. The UI has two roles:
+
+| Who | How | Sees |
+|---|---|---|
+| **Operator** | Anyone on the local network, no login (`-p host:=0.0.0.0`) | Only the **Operator** tab: ask for a task, see progress and pictures, **Stop task** |
+| **Admin** | **Admin** (top right) and the robot's admin password, or the SSH tunnel (always admin) | Everything: **Missions**, **Policy configs**, the robot's parts, localization, logs |
+
+The server checks the role on every request, not only in the page: without the login, saving or deleting a mission or a policy config, starting a robot part or a mission, and Go to pose are refused (`401`). Requests from outside private networks are refused (`403`), so the robot only answers its local network; no outside server is involved.
+
+Set the password once per robot, on the robot (stored hashed in `~/.config/stretch4_mission/admin_password`, readable only by the robot's user):
+
+```bash
+ros2 run stretch4_mission set_admin_password
+```
+
+An admin login lasts 12 hours or until the UI restarts; restart the UI after changing the password to log everyone out. Five wrong passwords lock the login for a minute.
+
+**NOTE**: Operators can still start the robot: a request plans and runs a mission without a confirmation, from the configs and missions an admin saved (see [Operator](operator.md#operator)). Save only what you want any person on the network to be able to run. The page is plain HTTP, so the admin password crosses the network unencrypted: serve it only on a Wi-Fi with a password, and use the SSH tunnel for admin work when you can.
 
 1. **Robot:** choose the map, then **Start all**, or start each part with its own button: **Robot driver**, **Lidars**, **Nav2** (on the selected map) and **Policy bridge**. Together they are what `stretch_nav2`'s `navigation_mppi.launch.py` starts (same included launch files and arguments), plus the bridge. Each row shows whether that part really works, not just whether its process exists: the driver's `/follow_joint_trajectory` action and `/joint_states`, fresh `/scan_filtered`, Nav2's `navigate_to_pose`, the bridge's `/policy/status`. Green = ready, yellow = started but not responding yet. A part already running outside the UI shows as "started from a terminal", and the UI does not start a second copy. Stop buttons send Ctrl-C and are disabled while a mission runs. Each part has its own log (selector at the bottom).
 

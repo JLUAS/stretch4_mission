@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start the mission UI on the robot with the same environment as ~/.bashrc (works from a plain ssh command too).
 # Open it from your computer through a tunnel:  ssh -L 8090:localhost:8090 hello-robot@<robot-ip>  ->  http://localhost:8090
-# Extra arguments are passed to the node, e.g.:  -p host:=0.0.0.0   (serve the whole network; the page has no login)
+# Extra arguments are passed to the node, e.g.:  -p host:=0.0.0.0   (local network: Operator view; admins log in,
+# password set once with: ros2 run stretch4_mission set_admin_password)
 # In the background: setsid -f <this script> > ~/.ros/stretch4_mission/ui.log 2>&1   (not `&`: it makes Ctrl-C ignored)
 set -e
 export HELLO_FLEET_PATH=/home/hello-robot/stretch_user

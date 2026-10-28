@@ -33,6 +33,15 @@
   /* ---------- layout ---------- */
   main { width:min(94%, 1800px); margin:0 auto; padding:16px 0 32px; display:grid; gap:16px;
          grid-template-columns:minmax(0, 1fr); }
+  /* phones (one column): the tab's own content first; Robot and map folded under a toggle, then the logs */
+  .robot-toggle { display:none; }
+  @media (max-width: 899px) {
+    main > .robot-toggle { display:flex; justify-content:space-between; align-items:center; width:100%; order:1; }
+    main > .robot, main > .map-card { order:1; }
+    main > .log-card { order:2; }
+    body:not([data-robot-open]) main > .robot, body:not([data-robot-open]) main > .map-card { display:none; }
+  }
+  body[data-tab="operator"] main > .robot-toggle { display:none; }
   @media (min-width: 900px) { main { grid-template-columns:380px minmax(0, 1fr); } .robot { grid-row:span 2; } .full { grid-column:1 / -1; } }
   @media (min-width: 1400px) { main { grid-template-columns:380px minmax(0, 1.25fr) minmax(0, 1fr); } .robot { grid-row:span 2; } .sm-card { grid-column:2 / -1; } }
   section { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; min-width:0; box-shadow:var(--shadow); }
@@ -162,6 +171,12 @@
   .tabs { display:flex; gap:6px; }
   .tabs button { background:rgba(255,255,255,.08); color:#B9C8D6; border:1px solid transparent; }
   .tabs button[aria-pressed="true"] { background:var(--pink); color:var(--navy); font-weight:600; }
+  body[data-admin="false"] .tabs { display:none; }
+  #btn-admin { margin-left:auto; background:transparent; color:inherit; border-color:currentColor; opacity:.75; }
+  #login { border:1px solid var(--line); border-radius:12px; padding:20px; background:var(--card); color:var(--text); width:min(92vw, 360px); }
+  #login::backdrop { background:rgba(0,0,0,.4); }
+  #login form { display:grid; gap:12px; }
+  #login .row { display:flex; gap:8px; justify-content:flex-end; }
   body:not([data-tab="missions"]) .tab-missions, body:not([data-tab="configs"]) .tab-configs,
   body:not([data-tab="operator"]) .tab-operator,
   body[data-tab="operator"] main > section:not(.tab-operator), body[data-tab="operator"] .flow { display:none; }
@@ -184,9 +199,11 @@
   @keyframes op-pulse { 50% { opacity:.35; } }
   .op-status h2 { margin:0; font-size:24px; } .op-status p { margin:2px 0 0; color:var(--muted); }
   .op-card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; display:grid; gap:14px; }
+  .op-card[hidden] { display:none; }
   .op form { display:flex; gap:10px; flex-wrap:wrap; }
   .op form input { flex:1; min-width:200px; font-size:20px; padding:14px 16px; border-radius:12px; }
   .op form button { font-size:18px; padding:12px 24px; border-radius:12px; }
+  @media (max-width: 600px) { .op form input, .op form button { flex-basis:100%; } }
   .chips { display:flex; gap:8px; flex-wrap:wrap; }
   .chips button { border-radius:999px; background:var(--chip); border:1px solid var(--line); color:var(--text); font-size:15px; padding:6px 14px; }
   .op-label { font-size:13px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
@@ -221,7 +238,7 @@
         max-height:340px; overflow:auto; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
 </style>
 </head>
-<body data-tab="missions">
+<body data-tab="operator" data-admin="false">
 <header>
   <div class="bar">
     <div class="brand">
@@ -232,6 +249,7 @@
       <button type="button" data-tab="missions" aria-pressed="true">Missions</button>
       <button type="button" data-tab="configs" aria-pressed="false">Policy configs</button>
     </div>
+    <button type="button" id="btn-admin" class="small" hidden>Admin</button>
     <ol class="flow" id="flow" aria-label="What to do next">
       <li><b>1</b>Turn on the robot</li>
       <li><b>2</b>Localize</li>
@@ -266,6 +284,7 @@
   </section>
 
   <!-- 1. Robot -->  <!-- 1. Robot -->
+  <button type="button" id="btn-robot-toggle" class="robot-toggle" aria-expanded="false">Robot &amp; map <span aria-hidden="true">▾</span></button>
   <section class="robot" aria-labelledby="h-nav">
     <h2 id="h-nav"><span class="num">1</span>Robot <span id="nav-pill" class="pill grow">Nav2 off</span></h2>
     <div class="field">
@@ -284,7 +303,7 @@
     <div id="nav-msg" class="msg" role="status"></div>
   </section>
 
-  <section aria-labelledby="h-map">
+  <section class="map-card" aria-labelledby="h-map">
     <h2 id="h-map">Map <span id="map-name" class="muted"></span></h2>
     <div class="map-wrap">
       <canvas id="map" width="400" height="300" role="img" aria-label="Map with the robot and the selected mission's goals. Press and drag on it to choose a Go to pose target."></canvas>
@@ -362,7 +381,7 @@
     </details>
   </section>
 
-  <section class="full" aria-labelledby="h-log">
+  <section class="full log-card" aria-labelledby="h-log">
     <details>
       <summary id="h-log">Log</summary>
       <div class="actions" style="margin-top:10px"><label for="log-which" style="margin:0">Show</label>
@@ -372,6 +391,15 @@
     </details>
   </section>
 </main>
+<dialog id="login" aria-labelledby="login-title">
+  <form id="login-form">
+    <h2 id="login-title">Admin login</h2>
+    <label>Password <input id="login-pass" type="password" autocomplete="current-password" required></label>
+    <div id="login-msg" class="msg" role="alert"></div>
+    <div class="row"><button type="button" id="login-cancel">Cancel</button><button class="primary">Log in</button></div>
+  </form>
+</dialog>
+
 <footer>Developed by <strong>Jose Luis Urquieta Aguilar</strong> and <strong>Samuel Francisco Cabrera Ramirez</strong></footer>
 
 <script>
@@ -1164,7 +1192,36 @@ $('btn-stop').onclick = async () => {
 $('nav-map').onchange = drawMap;
 $('log-which').onchange = refreshStatus;
 
+$('btn-robot-toggle').onclick = () => {   // phones only: show or fold Robot and map
+  const open = !document.body.hasAttribute('data-robot-open');
+  document.body.toggleAttribute('data-robot-open', open);
+  $('btn-robot-toggle').setAttribute('aria-expanded', String(open));
+  $('btn-robot-toggle').lastElementChild.textContent = open ? '▴' : '▾';
+  if (open) drawMap();
+};
+
+// ---------- admin login ----------
+$('login-cancel').onclick = () => $('login').close();
+$('login-form').onsubmit = async (e) => {
+  e.preventDefault();
+  try { await api('/api/login', { password: $('login-pass').value }); location.reload(); }
+  catch (err) { say($('login-msg'), err.message, false); $('login-pass').select(); }
+};
+
 (async () => {
+  const session = await api('/api/session').catch(() => ({ admin: false, local: false }));
+  document.body.dataset.admin = String(session.admin);
+  $('btn-admin').hidden = session.local;   // on the robot or through an SSH tunnel: always admin
+  $('btn-admin').textContent = session.admin ? 'Log out' : 'Admin';
+  $('btn-admin').onclick = session.admin
+    ? async () => { await api('/api/logout', {}).catch(() => {}); location.reload(); }
+    : () => { $('login-msg').textContent = ''; $('login-pass').value = ''; $('login').showModal(); };
+  if (!session.admin) {   // Operator view only; the server refuses everything else without the login
+    loadSuggestions();
+    refreshStatus();
+    setInterval(refreshStatus, 1000);
+    return;
+  }
   try {
     [maps, policies] = await Promise.all([api('/api/maps'), api('/api/policies')]);
   } catch (e) { say($('f-msg'), e.message, false); }

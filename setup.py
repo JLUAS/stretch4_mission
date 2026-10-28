@@ -25,6 +25,7 @@ setup(
             'mission_controller = stretch4_mission.mission_controller:main',
             'mission_ui = stretch4_mission.mission_ui:main',
             'policy_bridge = stretch4_mission.policy_bridge:main',
+            'set_admin_password = stretch4_mission.auth:main',
         ],
     },
 )

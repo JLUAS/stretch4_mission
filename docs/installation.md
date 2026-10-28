@@ -22,7 +22,8 @@ One-time setup of a robot for *stretch4_mission*, then the read-only check befor
    ```
 
    Create the key in the Claude Console (https://platform.claude.com, **API keys**); the requests are billed to that account. The key file is outside the repository, so it is never committed or copied with the code; never put the key in `config/` or `missions/`. Instead of the file, `ANTHROPIC_API_KEY` exported in the UI's environment also works. The robot needs to reach `api.anthropic.com` (HTTPS). Restart the UI afterwards, and check: `ros2 run stretch4_mission check_robot` shows the venv and the key under **Text requests**.
-6. **On another robot**, nothing changes for the robot itself: `scripts/run_ui_robot.sh` reads its ID from `/etc/hello-robot/hello-robot.conf` (`HELLO_FLEET_ID=stretch-se4-…`), which every Stretch has, so the driver and lidars load that robot's calibration. Do check, on that robot:
+6. **Admin password**, for the UI on the local network ([Operators and admins](web-ui.md#operators-and-admins)): `ros2 run stretch4_mission set_admin_password` on the robot. Without it, only the SSH tunnel gives admin access.
+7. **On another robot**, nothing changes for the robot itself: `scripts/run_ui_robot.sh` reads its ID from `/etc/hello-robot/hello-robot.conf` (`HELLO_FLEET_ID=stretch-se4-…`), which every Stretch has, so the driver and lidars load that robot's calibration. Do check, on that robot:
    - the start pose folders and datasets: `root:` (and `dataset:` for `lerobot`) of each policy in `config/policies.yaml`;
    - the Jetson: `jetson_host` in `config/policy_runner.yaml`, and the models (`ckpt:`) on it;
    - the map: the script preselects `maps/test.yaml`; without it the UI shows the first map in `~/stretch_user/maps`.

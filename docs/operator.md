@@ -4,7 +4,7 @@ A sentence in, a mission out: the **Operator** tab for end users, and **Ask & ru
 
 ## Operator
 
-The **Operator** tab is for the person who only wants the task done. Nothing else on the page is shown there, and it has its own light design. It shows:
+The **Operator** tab is for the person who only wants the task done. Nothing else on the page is shown there, and it has its own light design. Without the admin login it is the only view, and the server refuses everything else (see [Operators and admins](web-ui.md#operators-and-admins)). It shows:
 
 - **The robot's status**, in words: *Ready to help*, *Working on your task*, *Task complete*, *Needs your help* (the request cannot be done, or something went wrong, with the reason) and *Task stopped*.
 - **A text box**, and under it **Stretch can**: up to four example requests built from what is set up on the map (each policy config's task from `config/policies.yaml`, then the saved missions). A click puts one in the box.

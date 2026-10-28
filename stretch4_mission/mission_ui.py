@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Web UI for navigation setup, localization, mission editing, and mission execution.
 
-shortcut: no login, anyone who can reach the port can move the robot; add auth before using it off the lab network.
+Without a login only the Operator view works; the rest needs the admin password (auth.py) or a connection from the
+robot itself (SSH tunnel). Only private-network addresses are served.
+shortcut: plain HTTP, so the admin password crosses the network unencrypted; add TLS if the Wi-Fi is not trusted.
 """
 
 import collections
+import ipaddress
 import json
 import math
 import os
@@ -13,6 +16,7 @@ import subprocess
 import threading
 import time
 from glob import glob
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -36,6 +40,7 @@ from std_srvs.srv import Empty, Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
+from stretch4_mission.auth import COOKIE, SESSION_SEC, Sessions
 from stretch4_mission.mission_file import (AUTO, CONFIGS_FILE, NAME_RE, POSE_RE, load_configs, load_policies,
                                            parse_goal, recorded_runtime, save_recorded_runtimes, stored,
                                            validate_config, validate_mission, write_config)
@@ -151,7 +156,7 @@ class MissionUI(Node):
                 self.get_logger().info(f'Saved recording length: {line}')
         except (OSError, ValueError) as exc:
             self.get_logger().warning(f'Could not save the recording lengths: {exc}')
-        # 127.0.0.1: reach it through an SSH tunnel (no login on this page); 0.0.0.0 to serve the whole network
+        # 127.0.0.1: only through an SSH tunnel; 0.0.0.0: the local network (Operator view, admins log in)
         self.host, self.port = param('host', '127.0.0.1'), param('port', 8090)
         self.default_map = os.path.expanduser(param('default_map', ''))
         self.localize_spins = param('localize_spins', 3)
@@ -815,19 +820,52 @@ class MissionUI(Node):
                 proc.stop()
 
 
-def make_handler(ui):
+# What works without the admin login: the Operator view
+PUBLIC = {('GET', '/'), ('GET', '/api/status'), ('GET', '/api/session'), ('GET', '/api/operator/suggestions'),
+          ('GET', '/api/snapshot'), ('POST', '/api/operator'), ('POST', '/api/operator/stop'),
+          ('POST', '/api/login'), ('POST', '/api/logout')}
+
+
+def make_handler(ui, sessions=None):
+    sessions = sessions or Sessions()
+
     class Handler(BaseHTTPRequestHandler):
-        def _send(self, code, body, ctype='application/json'):
+        def _send(self, code, body, ctype='application/json', cookie=None):
             data = body if isinstance(body, bytes) else json.dumps(body).encode()
             self.send_response(code)
             self.send_header('Content-Type', ctype)
             self.send_header('Content-Length', str(len(data)))
             self.send_header('Cache-Control', 'no-store')
+            if cookie is not None:
+                self.send_header('Set-Cookie', f'{COOKIE}={cookie}; HttpOnly; SameSite=Strict; Path=/; '
+                                               f'Max-Age={SESSION_SEC if cookie else 0}')
             self.end_headers()
             self.wfile.write(data)
 
         def log_message(self, fmt, *args):
             pass  # status is polled every second; keep the terminal readable
+
+        def _token(self):
+            try:
+                morsel = SimpleCookie(self.headers.get('Cookie', '')).get(COOKIE)
+            except CookieError:
+                return None
+            return morsel.value if morsel else None
+
+        def _local(self):
+            return ipaddress.ip_address(self.client_address[0]).is_loopback   # on the robot, or an SSH tunnel
+
+        def _admin(self):
+            return self._local() or sessions.valid(self._token())
+
+        def _allowed(self, method, path):
+            if not ipaddress.ip_address(self.client_address[0]).is_private:
+                self._send(403, {'error': 'This robot only answers its local network'})
+                return False
+            if (method, path) in PUBLIC or self._admin():
+                return True
+            self._send(401, {'error': 'Admin login required'})
+            return False
 
         def _guard(self, fn):
             try:
@@ -842,10 +880,14 @@ def make_handler(ui):
         def do_GET(self):
             url = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
+            if not self._allowed('GET', url.path):
+                return
 
             def get():
                 if url.path == '/':
                     return self._send(200, INDEX_HTML.read_bytes(), 'text/html; charset=utf-8')
+                if url.path == '/api/session':
+                    return self._send(200, {'admin': self._admin(), 'local': self._local()})
                 if url.path == '/api/status':
                     return self._send(200, ui.status(q.get('log', 'mission')))
                 if url.path == '/api/missions':
@@ -879,6 +921,9 @@ def make_handler(ui):
             self._guard(get)
 
         def do_POST(self):
+            if not self._allowed('POST', self.path):
+                return
+
             def post():
                 length = int(self.headers.get('Content-Length', 0))
                 if length > 100000:
@@ -889,6 +934,11 @@ def make_handler(ui):
                     raise ValueError('expected JSON') from None
                 if not isinstance(body, dict):
                     raise ValueError('expected a JSON object')
+                if self.path == '/api/login':
+                    return self._send(200, {'admin': True}, cookie=sessions.login(body.get('password', '')))
+                if self.path == '/api/logout':
+                    sessions.logout(self._token())
+                    return self._send(200, {'admin': False}, cookie='')
                 routes = {
                     '/api/missions': lambda: {'saved': ui.save_mission(body)},
                     '/api/missions/delete': lambda: (ui.delete_mission(body.get('name')), {'deleted': body.get('name')})[1],

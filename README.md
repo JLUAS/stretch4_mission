@@ -62,7 +62,7 @@ ssh -N -L 8090:localhost:8090 hello-robot@<robot-ip>
 | Document | What it covers |
 |---|---|
 | [Installation](docs/installation.md) | One-time setup on the robot (policy runners, policies, build, text requests), and `check_robot` before each session |
-| [Web UI and missions](docs/web-ui.md) | Starting the robot from the UI, localizing, creating and running missions, the mission file format, what every step does |
+| [Web UI and missions](docs/web-ui.md) | Starting the robot from the UI, operators and admins (login), localizing, creating and running missions, the mission file format, what every step does |
 | [Policy steps](docs/policy-steps.md) | Policy configs, the two policy runners (`recorder`, `lerobot`), adding policies (`sync_policies`), policy run time |
 | [Navigate steps](docs/navigate-steps.md) | Navigation and lidar alignment, Go to pose |
 | [Command steps](docs/command-steps.md) | Shell commands run on the robot as a mission step |
