@@ -35,4 +35,5 @@ docs/*.webm
 # Local mission data contains site-specific maps, poses, and lidar scans.
 missions/*.yaml
 missions/scans/
+missions/configs/
 !missions/README.md

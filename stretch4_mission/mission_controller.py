@@ -64,8 +64,8 @@ class MissionTrace:
 
     def __init__(self, name, steps):
         self.data = {'mission': name, 'state': 'INITIALIZING', 'step': None, 'detail': '',
-                     'steps': [{'type': s.get('type', 'policy'), 'policy': s.get('policy'), 'goal': s.get('goal'),
-                                'command': s.get('command'), 'result': '',
+                     'steps': [{'type': s.get('type', 'policy'), 'policy': s.get('policy'), 'config': s.get('config'),
+                                'goal': s.get('goal'), 'command': s.get('command'), 'result': '',
                                 'phases': {p: 'pending' for p in STEP_PHASES[s.get('type', 'policy')]}} for s in steps]}
 
     def _finish_active(self, status):

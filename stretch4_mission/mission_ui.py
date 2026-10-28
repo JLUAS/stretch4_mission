@@ -36,11 +36,14 @@ from std_srvs.srv import Empty, Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
-from stretch4_mission.mission_file import (AUTO, NAME_RE, POSE_RE, load_policies, parse_goal, recorded_runtime,
-                                           save_recorded_runtimes, validate_mission)
+from stretch4_mission.mission_file import (AUTO, CONFIGS_FILE, NAME_RE, POSE_RE, load_configs, load_policies,
+                                           parse_goal, recorded_runtime, save_recorded_runtimes, stored,
+                                           validate_config, validate_mission, write_config)
+from stretch4_mission.planner import build_catalog, plan_to_mission
 from stretch4_mission.scan_align import base_points
 
 INDEX_HTML = Path(__file__).with_name('web') / 'index.html'
+PLANNER = Path(__file__).with_name('planner.py')   # run by the planner venv's Python (it has the anthropic SDK)
 LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
 # Start order = list order; stop order = reverse. Each is navigation.launch.py with only that switch true.
 COMPONENTS = [('driver', 'Robot driver', 'stretch_driver, navigation mode'),
@@ -155,6 +158,8 @@ class MissionUI(Node):
         self.localized_sigma_xy = param('localized_sigma_xy', 0.25)
         self.localized_sigma_yaw = param('localized_sigma_yaw', 0.30)
         self.trajectory_action = param('trajectory_action', '/follow_joint_trajectory')
+        self.planner_python = param('planner_python', '~/.venvs/stretch4_planner/bin/python')
+        self.planner_model = param('planner_model', 'claude-opus-5-5')
         log_dir = self.log_dir = Path(os.path.expanduser('~/.ros/stretch4_mission'))
         self.missions_dir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -244,15 +249,19 @@ class MissionUI(Node):
         image = Path(path).parent / meta['image']
         return meta, image
 
+    def configs(self):
+        """Policy configs -> ({name: config}, {name: error})."""
+        return load_configs(self.missions_dir / CONFIGS_FILE, self.policies(), self.maps())
+
     def missions(self):
-        policies = self.policies()
+        policies, (configs, _) = self.policies(), self.configs()
         out = []
         for path in sorted(self.missions_dir.glob('*.yaml')):
             data = None
             try:
                 with open(path) as f:
                     data = yaml.safe_load(f)
-                out.append(validate_mission(data, policies))
+                out.append(validate_mission(data, policies, configs=configs))
             except (OSError, yaml.YAMLError, ValueError) as exc:
                 entry = {'name': path.stem, 'error': str(exc)}
                 if isinstance(data, dict) and isinstance(data.get('steps'), list):
@@ -294,27 +303,49 @@ class MissionUI(Node):
             'captured_at': time.strftime('%Y-%m-%dT%H:%M:%S'), 'points': np.round(pts, 4).tolist()}))
         return {'pose': pose, 'scan': name, 'points': len(pts)}
 
+    def check_place(self, step, map_path, where):
+        """A policy's start pose exists, and a lidar reference exists and was captured on map_path."""
+        if step.get('policy') and step['start_pose'] not in self.policy_start_poses(self.policies()[step['policy']]):
+            raise ValueError(f"{where}: start pose {step['start_pose']} not found in policy root")
+        if not step.get('scan'):
+            return
+        ref = self.missions_dir / 'scans' / step['scan']
+        if not ref.is_file():
+            raise ValueError(f"{where}: reference scan {step['scan']} not found")
+        captured_on = json.loads(ref.read_text()).get('map')
+        # the goal and the reference belong to the map they were captured on; another map puts them elsewhere
+        if captured_on and os.path.realpath(captured_on) != os.path.realpath(map_path):
+            raise ValueError(f"{where}: its goal and lidar reference were captured on {Path(captured_on).name}; "
+                             f"use that map, or start Nav2 on {Path(map_path).name} and capture the goal again")
+
     def save_mission(self, body):
-        policies = self.policies()
-        mission = validate_mission(body, policies, self.maps())
+        mission = validate_mission(body, self.policies(), self.maps(), self.configs()[0])
         for i, step in enumerate(mission['steps'], 1):
-            if step['type'] == 'policy' and step['start_pose'] not in self.policy_start_poses(policies[step['policy']]):
-                raise ValueError(f"step {i}: start pose {step['start_pose']} not found in policy root")
-            if not step.get('scan'):
-                continue
-            ref = self.missions_dir / 'scans' / step['scan']
-            if not ref.is_file():
-                raise ValueError(f"step {i}: reference scan {step['scan']} not found")
-            captured_on = json.loads(ref.read_text()).get('map')
-            # the goal and the reference belong to the map they were captured on; another map puts them elsewhere
-            if captured_on and os.path.realpath(captured_on) != os.path.realpath(mission['map']):
-                raise ValueError(f"step {i}: its goal and lidar reference were captured on {Path(captured_on).name}; "
-                                 f"use that map, or start Nav2 on {Path(mission['map']).name} and capture the goal again")
+            self.check_place(step, mission['map'], f'step {i}')
         path = self.missions_dir / f"{mission['name']}.yaml"
         tmp = path.with_suffix('.tmp')
-        tmp.write_text(yaml.safe_dump(mission, sort_keys=False))
+        tmp.write_text(yaml.safe_dump(stored(mission), sort_keys=False))   # config steps keep only their name
         tmp.replace(path)  # atomic: a running mission never reads a half-written file
         return mission['name']
+
+    def save_config(self, body):
+        """Policy configs tab: create or replace one config (missions using it pick up the change)."""
+        name = str(body.get('name', ''))
+        cfg = validate_config(name, {k: body.get(k) for k in ('map', 'policy', 'start_pose', 'goal', 'scan', 'label',
+                                                             'max_runtime_sec', 'run_args', 'needs', 'leaves')},
+                              self.policies(), self.maps())
+        self.check_place(cfg, cfg['map'], f'policy config {name}')
+        write_config(self.missions_dir / CONFIGS_FILE, name, cfg)
+        return f'Saved policy config {name}'
+
+    def delete_config(self, name):
+        """Missions that use it stay, and show an error until their step picks another config."""
+        configs, errors = self.configs()
+        if name not in configs and name not in errors:
+            raise ValueError(f'Unknown policy config {name!r}')
+        used = [m['name'] for m in self.missions() if any(s.get('config') == name for s in m.get('steps', []))]
+        write_config(self.missions_dir / CONFIGS_FILE, name, None)
+        return f"Deleted policy config {name}" + (f"; fix the missions that used it: {', '.join(used)}" if used else '')
 
     def delete_mission(self, name):
         if not NAME_RE.match(str(name)) or not (self.missions_dir / f'{name}.yaml').is_file():
@@ -570,7 +601,7 @@ class MissionUI(Node):
             if not NAME_RE.match(str(name)) or not (self.missions_dir / f'{name}.yaml').is_file():
                 raise ValueError(f'Unknown mission {name!r}')
             with open(self.missions_dir / f'{name}.yaml') as f:
-                mission = validate_mission(yaml.safe_load(f), self.policies())
+                mission = validate_mission(yaml.safe_load(f), self.policies(), configs=self.configs()[0])
             nav_map = self._check_ready()
             if os.path.realpath(mission['map']) != os.path.realpath(nav_map):
                 raise RuntimeError(f"Mission is for {Path(mission['map']).name}, Nav2 runs {Path(nav_map).name}")
@@ -578,6 +609,42 @@ class MissionUI(Node):
             self.mission.start(['ros2', 'launch', 'stretch4_mission', 'mission.launch.py', 'navigation:=false',
                                 f"mission_file:={self.missions_dir / f'{name}.yaml'}",
                                 f'policies_file:={self.policies_file}', *self.launch_args], name)
+
+    def ask(self, text):
+        """Text request: Claude picks steps of the saved missions on this map (planner.py); saved as ask_<time>, started."""
+        text = str(text or '').strip()
+        if not 1 <= len(text) <= 500:
+            raise ValueError('Type a request (up to 500 characters)')
+        nav_map = self._check_ready()   # before paying for a plan the robot could not run
+        here = lambda m: os.path.realpath(m) == os.path.realpath(nav_map)   # noqa: E731
+        same_map = [m for m in self.missions() if 'error' not in m and here(m['map'])]
+        configs = {n: c for n, c in self.configs()[0].items() if here(c['map'])}
+        catalog = build_catalog(same_map, self.policies(), configs)
+        if not catalog:
+            raise RuntimeError(f'Nothing set up on {Path(nav_map).name}: add policy configs (Policy configs tab) '
+                               'or missions first')
+        python = os.path.expanduser(self.planner_python)
+        if not os.path.isfile(python):
+            raise RuntimeError(f'{python} not found (README: "Text requests")')
+        request = {'text': text, 'model': self.planner_model,
+                   'catalog': [{'id': c['id'], 'description': c['description']} for c in catalog]}
+        try:
+            proc = subprocess.run([python, str(PLANNER)], input=json.dumps(request), capture_output=True, text=True,
+                                  timeout=180)
+            result = json.loads(proc.stdout.strip().splitlines()[-1])
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('The planner took more than 180 s') from None
+        except (IndexError, ValueError):
+            raise RuntimeError((proc.stderr or proc.stdout or 'no output from the planner').strip()[-300:]) from None
+        if 'error' in result:
+            raise RuntimeError(result['error'])
+        self.get_logger().info(f"Text request {text!r} -> {result['plan']}: {result['message']}")
+        if not result['plan']:
+            return {'message': result['message'], 'mission': None, 'plan': []}
+        name = f"ask_{time.strftime('%Y%m%d_%H%M%S')}"
+        self.save_mission(plan_to_mission(result['plan'], catalog, name, nav_map))
+        self.start_mission(name)
+        return {'message': result['message'], 'mission': name, 'plan': result['plan']}
 
     def goto_pose(self, body):
         """Stow the arm, then drive to {x, y, yaw} (map frame, on the map Nav2 runs) with the mission controller."""
@@ -649,6 +716,9 @@ def make_handler(ui):
                     return self._send(200, ui.status(q.get('log', 'mission')))
                 if url.path == '/api/missions':
                     return self._send(200, ui.missions())
+                if url.path == '/api/configs':
+                    configs, errors = ui.configs()
+                    return self._send(200, {'configs': configs, 'errors': errors})
                 if url.path == '/api/maps':
                     return self._send(200, ui.maps())
                 if url.path == '/api/config':
@@ -694,6 +764,9 @@ def make_handler(ui):
                     '/api/start': lambda: (ui.start_mission(body.get('name')), {'started': body.get('name')})[1],
                     '/api/stop': lambda: {'message': ui.stop_mission()},
                     '/api/goto': lambda: (ui.goto_pose(body), {'started': 'Go to pose'})[1],
+                    '/api/ask': lambda: ui.ask(body.get('text')),
+                    '/api/configs': lambda: {'message': ui.save_config(body)},
+                    '/api/configs/delete': lambda: {'message': ui.delete_config(str(body.get('name', '')))},
                 }
                 if self.path not in routes:
                     return self._send(404, {'error': 'not found'})

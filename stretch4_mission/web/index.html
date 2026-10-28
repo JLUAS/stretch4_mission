@@ -157,6 +157,10 @@
   .grid3 { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin:6px 0 10px; align-items:end; }
   @media (max-width: 600px) { .grid2, .grid3 { grid-template-columns:minmax(0, 1fr); } }
   .runargs { margin:10px 0; }
+  .tabs { display:flex; gap:6px; }
+  .tabs button { background:rgba(255,255,255,.08); color:#B9C8D6; border:1px solid transparent; }
+  .tabs button[aria-pressed="true"] { background:var(--pink); color:var(--navy); font-weight:600; }
+  body[data-tab="configs"] .tab-missions, body:not([data-tab="configs"]) .tab-configs { display:none; }
   .runargs input { font-family:ui-monospace, monospace; }
   .runargs .cmd { display:block; margin-top:6px; padding:6px 8px; overflow-wrap:anywhere; }
   .s-scan { margin-top:8px; padding:8px 10px; border-radius:8px; background:var(--chip); }
@@ -177,6 +181,10 @@
   <div class="bar">
     <div class="brand">
       <div><h1>Stretch 4 Missions</h1><div class="sub">Nav2 + trained policies · mission control</div></div>
+    </div>
+    <div class="tabs" role="group" aria-label="View">
+      <button type="button" data-tab="missions" aria-pressed="true">Missions</button>
+      <button type="button" data-tab="configs" aria-pressed="false">Policy configs</button>
     </div>
     <ol class="flow" id="flow" aria-label="What to do next">
       <li><b>1</b>Turn on the robot</li>
@@ -223,13 +231,18 @@
   </section>
 
   <!-- 3. Missions -->
-  <section aria-labelledby="h-missions">
+  <section class="tab-missions" aria-labelledby="h-missions">
     <h2 id="h-missions"><span class="num">3</span>Missions <button id="btn-new" class="small grow">+ New mission</button></h2>
+    <form id="ask-form" class="actions" style="margin-bottom:10px">
+      <input id="ask-text" maxlength="500" autocomplete="off" placeholder="Ask: e.g. open the cabinet, then clean the table"
+             style="width:auto;flex:1;min-width:200px" aria-label="Text request for the robot">
+      <button id="btn-ask" class="primary">Ask &amp; run</button>
+    </form>
     <div id="missions" class="mlist"><div class="muted">Loading…</div></div>
     <div id="m-msg" class="msg" role="status"></div>
   </section>
 
-  <section class="sm-card full" aria-labelledby="h-sm">
+  <section class="sm-card full tab-missions" aria-labelledby="h-sm">
     <h2 id="h-sm">State machine <span id="sm-name" class="muted"></span> <span id="sm-pill" class="pill">idle</span>
       <button id="btn-stop" class="danger grow" disabled>■ Stop mission (Ctrl-C)</button></h2>
     <div id="sm-empty" class="empty">Select a mission to see its state machine.</div>
@@ -245,8 +258,22 @@
     <div id="s-msg" class="msg" role="status"></div>
   </section>
 
+  <!-- Policy configs: where and how each policy runs on a map -->
+  <section class="tab-configs" aria-labelledby="h-configs">
+    <h2 id="h-configs">Policy configs <button id="btn-new-config" class="small grow">+ New config</button></h2>
+    <p class="muted">A policy config is where and how a policy runs on a map: its station (goal and lidar reference),
+      start pose and run settings. Mission steps and text requests use configs by name, so editing one updates every
+      mission that uses it.</p>
+    <div id="configs" class="mlist"><div class="muted">Loading…</div></div>
+    <div id="c-msg" class="msg" role="status"></div>
+  </section>
+  <section class="full tab-configs" aria-labelledby="h-config-form">
+    <h2 id="h-config-form">✎ <span id="config-form-title">New policy config</span></h2>
+    <form id="config-form" novalidate></form>
+  </section>
+
   <!-- Editor -->
-  <section class="full" aria-labelledby="h-edit">
+  <section class="full tab-missions" aria-labelledby="h-edit">
     <details id="edit-box">
     <summary id="h-edit">✎ Edit mission</summary>
     <form id="form" novalidate style="margin-top:14px">
@@ -283,7 +310,7 @@ const PHASES = ['RETRACTING_ARM', 'CHECKING_POSE', 'NAVIGATING', 'ALIGNING', 'PR
 // same as STEP_PHASES in mission_controller.py; a step without type is a policy step
 const STEP_PHASES = { policy: PHASES.slice(0, 6), navigate: PHASES.slice(0, 4), command: ['RETRACTING_ARM', 'RUNNING_COMMAND'] };
 const phasesOf = (s) => STEP_PHASES[s.type || 'policy'];
-const stepName = (s) => (s.type === 'navigate' ? 'Navigate' : s.type === 'command' ? 'Command' : s.policy);
+const stepName = (s) => (s.type === 'navigate' ? s.label || 'Navigate' : s.type === 'command' ? s.label || 'Command' : s.config || s.policy);
 const PHASE_LABEL = { RETRACTING_ARM: 'Retract arm', CHECKING_POSE: 'Verify pose', NAVIGATING: 'Navigate',
                       ALIGNING: 'Align (lidar)', PREPARING_POLICY: 'Prepare lift', EXECUTING_POLICY: 'Execute policy',
                       RUNNING_COMMAND: 'Run command' };
@@ -393,7 +420,10 @@ async function drawMap() {
   };
   // goals: the running mission's (a running Go to pose gets the pose arrow), else the steps in the editor
   const gotoRun = S?.mission?.running && S.trace?.mission === 'Go to pose';
-  const goals = S?.mission?.running && S.trace?.steps ? S.trace.steps.map((s) => s.goal) : formSteps().map((s) => s.goal);
+  const configsTab = document.body.dataset.tab === 'configs';
+  const goals = configsTab ? Object.values(configs).filter((c) => c.map === path).map((c) => c.goal)
+    : S?.mission?.running && S.trace?.steps ? S.trace.steps.map((s) => s.goal)
+    : formSteps().map((s) => s.goal || configs[s.config]?.goal);
   goals.forEach((g, i) => { if (!g || !isFinite(g.x)) return; if (gotoRun) poseMarker(g); else arrow(g.x, g.y, g.yaw, 0.3, GOAL_COLOR, String(i + 1)); });
   if (S?.pose && S?.nav?.map === path) {
     const [u, v] = px(S.pose.x, S.pose.y);
@@ -402,6 +432,8 @@ async function drawMap() {
     arrow(S.pose.x, S.pose.y, S.pose.yaw, 0.35, ROBOT_COLOR);
   }
   if (gotoPose && gotoPose.map === path && !gotoRun) poseMarker(gotoPose, !!dragFrom);
+  const f = $('config-form');   // the config being edited, as a teal arrow
+  if (configsTab && f.readGoal) { const g = f.readGoal(); if (g.map === path && isFinite(g.goal.x)) poseMarker({ ...g.goal }, true); }
 }
 
 // ---------- go to pose: press = position, drag = heading ----------
@@ -638,35 +670,24 @@ async function deleteMission(name) {
   catch (e) { say($('m-msg'), e.message, false); }
 }
 
-// ---------- editor ----------
-function addStep(step = {}) {
+// ---------- shared form fields ----------
+const lab = (text, input) => { const d = el('div'); const l = el('label', '', text); const id = 'i' + Math.random().toString(36).slice(2); input.id = id; l.htmlFor = id; d.append(l, input); return d; };
+// how a policy runs: runner recorder (stretch4_policy_recorder diffusion) or lerobot (LeRobot async, any policy type)
+const how = (c) => (c.runner === 'lerobot' ? `LeRobot ${c.policy_type}` : 'recorder diffusion');
+
+// policy, start pose, run time and run arguments of a policy config -> { nodes, read() }
+function policyFields(data) {
   const policyNames = Object.keys(policies);
-  if (!step.goal && S?.pose) step = { ...step, goal: { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw } };  // new step: robot's pose
-  const box = el('div', 'step');
-  const head = el('div', 'step-head');
-  const title = el('strong', '', 'Step');
-  const tools = el('div', 'actions');
-  const btn = (text, label, fn) => { const b = el('button', 'small', text); b.type = 'button'; b.setAttribute('aria-label', label); b.onclick = fn; tools.append(b); };
-  btn('↑', 'Move step up', () => { box.previousElementSibling && box.parentNode.insertBefore(box, box.previousElementSibling); numberSteps(); });
-  btn('↓', 'Move step down', () => { box.nextElementSibling && box.parentNode.insertBefore(box.nextElementSibling, box); numberSteps(); });
-  btn('Remove', 'Remove step', () => { box.remove(); numberSteps(); });
-  head.append(title, tools);
-  const type = el('select'); type.className = 's-type';
-  options(type, [['policy', 'Policy'], ['navigate', 'Navigate only'], ['command', 'Command on the robot']], step.type || 'policy');
   const row = el('div', 'grid3');
-  const pol = el('select'); pol.className = 's-policy';
-  const unknown = step.policy && !(step.policy in policies) ? [[step.policy, `⚠ unknown: ${step.policy} (choose another)`]] : [];
-  // how it runs: runner recorder (stretch4_policy_recorder diffusion) or lerobot (LeRobot async, any policy type)
-  const how = (c) => (c.runner === 'lerobot' ? `LeRobot ${c.policy_type}` : 'recorder diffusion');
-  options(pol, [...unknown, ...policyNames.map((n) => [n, `${n} — ${policies[n].task || ''} · ${how(policies[n])}`])], step.policy || policyNames[0]);
-  const pose = el('select'); pose.className = 's-start-pose';
+  const pol = el('select');
+  const unknown = data.policy && !(data.policy in policies) ? [[data.policy, `⚠ unknown: ${data.policy} (choose another)`]] : [];
+  options(pol, [...unknown, ...policyNames.map((n) => [n, `${n} — ${policies[n].task || ''} · ${how(policies[n])}`])], data.policy || policyNames[0]);
+  const pose = el('select');
   // the bridge stops the policy after this; empty = the policy's run time from policies.yaml
-  const runtime = el('input'); runtime.type = 'number'; runtime.min = '1'; runtime.step = '0.1'; runtime.className = 's-runtime';
-  runtime.value = step.max_runtime_sec ?? '';
+  const runtime = el('input'); runtime.type = 'number'; runtime.min = '1'; runtime.step = '0.1'; runtime.value = data.max_runtime_sec ?? '';
   const runNote = el('div', 'muted');
   // stretch4_policy_run (recorder) or robot_client (lerobot) arguments; empty = the policy's run_args from policies.yaml
-  const args = el('input'); args.className = 's-runargs'; args.autocomplete = 'off'; args.spellcheck = false;
-  args.value = step.run_args ?? '';
+  const args = el('input'); args.autocomplete = 'off'; args.spellcheck = false; args.value = data.run_args ?? '';
   const cmd = el('code', 'cmd');
   const showCmd = () => { const c = policies[pol.value], a = args.value.trim() || c?.run_args;
     cmd.textContent = !c ? '' : c.runner === 'lerobot'
@@ -680,41 +701,181 @@ function addStep(step = {}) {
     pose.disabled = !names.length;
     const r = c?.runtime, def = !r ? '—' : r.sec === null ? 'unknown' : `${r.sec.toFixed(1)} s`;
     runtime.placeholder = `policy default: ${def}`;
-    runNote.textContent = !r ? '' : `Empty = policy default (${r.sec === null ? '⚠ ' : ''}${r.note}). Type seconds to set this step's own limit.`;
+    runNote.textContent = !r ? '' : `Empty = policy default (${r.sec === null ? '⚠ ' : ''}${r.note}). Type seconds to set this config's own limit.`;
     args.placeholder = c ? `policy default: ${c.run_args || '(none)'}` : '';
     showCmd();
     info.textContent = !c ? 'This policy is not in config/policies.yaml: choose another one.'
       : c.runner === 'lerobot' ? `runs with LeRobot (${c.policy_type}) · start poses: ${c.root} · dataset (robot): ${c.dataset} · model (Jetson): ${c.ckpt}`
       : `runs with stretch4_policy_recorder (diffusion) · dataset: ${c.root} · checkpoint (Jetson): ${c.ckpt}`; };
   pol.onchange = () => showInfo('start_pose.json');
-  showInfo(step.start_pose || 'start_pose.json');
-  const lab = (text, input) => { const d = el('div'); const l = el('label', '', text); const id = 'i' + Math.random().toString(36).slice(2); input.id = id; l.htmlFor = id; d.append(l, input); return d; };
+  showInfo(data.start_pose || 'start_pose.json');
   row.append(lab('Policy', pol), lab('Start pose JSON', pose), lab('Policy run time (s)', runtime));
   const argsBox = lab('Run arguments (empty = the policy default; the full command is below)', args);
   argsBox.className = 'runargs'; argsBox.append(cmd);
+  return { nodes: [row, runNote, argsBox, info],
+           read: () => ({ policy: pol.value, start_pose: pose.value, run_args: args.value.trim() || null,
+                          max_runtime_sec: runtime.value === '' ? null : parseFloat(runtime.value) }) };
+}
+
+// goal on the map + lidar reference, captured at the robot's pose -> { nodes, read() }
+function goalFields(data, msg) {
+  let scan = data.scan || '';
   const goal = el('div', 'grid3');
-  const num = (cls, v, step_) => { const i = el('input'); i.type = 'number'; i.step = step_; i.className = cls; i.value = v ?? 0; i.oninput = drawMap; return i; };
+  const at = data.goal || (S?.pose && { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw }) || {};   // new: the robot's pose
+  const num = (cls, v) => { const i = el('input'); i.type = 'number'; i.step = '0.0001'; i.className = cls; i.value = v ?? 0; i.oninput = drawMap; return i; };
   // step 0.0001: the browser accepts up to 4 decimals
-  const gx = num('g-x', step.goal?.x, '0.0001'), gy = num('g-y', step.goal?.y, '0.0001'), gyaw = num('g-yaw', step.goal?.yaw, '0.0001');
+  const gx = num('g-x', at.x), gy = num('g-y', at.y), gyaw = num('g-yaw', at.yaw);
   goal.append(lab('goal x (m)', gx), lab('goal y (m)', gy), lab('goal yaw (rad)', gyaw));
   const use = el('button', 'small primary', '◎ Use robot pose as goal'); use.type = 'button'; use.dataset.pose = '1'; use.disabled = !S?.pose;
   const ref = el('div', 'muted s-scan');
-  const showRef = () => (ref.textContent = box.dataset.scan
-    ? `✓ Lidar reference: ${box.dataset.scan}. On arrival the robot aligns to this exact spot (~1 cm).`
-    : 'No lidar reference: arrival is checked with AMCL only (~5-10 cm). Park the robot on the recorded spot and press the button.');
-  box.dataset.scan = step.scan || '';
+  const showRef = () => (ref.textContent = scan
+    ? `✓ Lidar reference: ${scan}. On arrival the robot aligns to this exact spot (~1 cm).`
+    : 'No lidar reference: arrival is checked with AMCL only (~5-10 cm). Park the robot on the spot and press the button.');
   showRef();
   use.onclick = async () => {
     use.disabled = true; use.textContent = 'Capturing lidar reference…';
     try {
       const r = await api('/api/capture', {});
-      gx.value = r.pose.x; gy.value = r.pose.y; gyaw.value = r.pose.yaw; box.dataset.scan = r.scan;
-      say($('f-msg'), `Goal + lidar reference saved (${r.points} points). Save the mission to keep it.`, true);
+      gx.value = r.pose.x; gy.value = r.pose.y; gyaw.value = r.pose.yaw; scan = r.scan;
+      say(msg, `Goal + lidar reference captured (${r.points} points). Save to keep it.`, true);
     } catch (e) {
-      say($('f-msg'), 'No lidar reference: ' + e.message, false);
-      if (S?.pose) { gx.value = S.pose.x; gy.value = S.pose.y; gyaw.value = S.pose.yaw; box.dataset.scan = ''; }
+      say(msg, 'No lidar reference: ' + e.message, false);
+      if (S?.pose) { gx.value = S.pose.x; gy.value = S.pose.y; gyaw.value = S.pose.yaw; scan = ''; }
     } finally { use.disabled = !S?.pose; use.textContent = '◎ Use robot pose as goal'; showRef(); drawMap(); }
   };
+  return { nodes: [el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref],
+           read: () => ({ goal: { x: parseFloat(gx.value), y: parseFloat(gy.value), yaw: parseFloat(gyaw.value) }, scan }) };
+}
+
+// ---------- policy configs tab ----------
+let configs = {}, configErrors = {}, editingConfig = null;
+const configText = (n, c) => `${c.policy} · ${policies[c.policy] ? how(policies[c.policy]) : '⚠ unknown policy'} · ${base(c.map)}`
+  + ` · ${c.scan ? 'lidar reference ✓' : 'no lidar reference'}${c.label ? ` · “${c.label}”` : ''}`
+  + `${c.needs ? ` · needs: ${c.needs}` : ''}${c.leaves ? ` · leaves: ${c.leaves}` : ''}`;
+async function refreshConfigs() {
+  try { const r = await api('/api/configs'); configs = r.configs; configErrors = r.errors; }
+  catch (e) { say($('c-msg'), e.message, false); }
+  renderConfigs(); drawMap();
+}
+function renderConfigs() {
+  const list = $('configs'); list.replaceChildren();
+  const names = [...Object.keys(configs), ...Object.keys(configErrors)];
+  if (!names.length) { list.append(el('div', 'empty', 'No policy configs yet. Press “+ New config”.')); return; }
+  for (const n of names) {
+    const c = configs[n], card = el('div', 'mcard' + (n === editingConfig ? ' selected' : ''));
+    const top = el('div', 'top'); top.append(el('strong', '', n), el('span', 'muted', c ? configText(n, c) : ''));
+    card.append(top);
+    if (!c) card.append(el('div', 'err', '⚠ ' + configErrors[n]));
+    const td = el('div', 'actions');
+    const edit = el('button', 'small', 'Edit'); edit.type = 'button'; edit.disabled = !c;
+    edit.onclick = () => openConfig(n);
+    const del = el('button', 'small', 'Delete'); del.type = 'button';
+    del.onclick = async () => {
+      if (!confirm(`Delete policy config "${n}"? Missions that use it will need another config.`)) return;
+      try { const r = await api('/api/configs/delete', { name: n }); say($('c-msg'), r.message, true); if (editingConfig === n) openConfig(null); await refreshConfigs(); refreshMissions(); }
+      catch (e) { say($('c-msg'), e.message, false); }
+    };
+    td.append(edit, del); card.append(td); list.append(card);
+  }
+}
+function openConfig(name) {
+  editingConfig = name;
+  const c = name ? configs[name] : {}, form = $('config-form');
+  $('config-form-title').textContent = name ? `Edit policy config ${name}` : 'New policy config';
+  const nm = el('input'); nm.required = true; nm.pattern = '[A-Za-z0-9_\\-]{1,64}'; nm.autocomplete = 'off'; nm.value = name || '';
+  nm.disabled = !!name;   // missions refer to the name; to rename, make a new config
+  const mp = el('select'); options(mp, maps.map((m) => [m, base(m)]), c.map || S?.nav?.map || $('f-map').value);
+  mp.onchange = drawMap;
+  const label = el('input'); label.maxLength = 60; label.autocomplete = 'off'; label.value = c.label || '';
+  label.placeholder = 'e.g. kitchen cabinet (what text requests call it)';
+  const head = el('div', 'grid3');
+  head.append(lab('Name (letters, digits, _ or -)', nm), lab('Map (the goal is in this map’s frame)', mp), lab('Label (optional, used by text requests)', label));
+  // what the policy needs before it runs / leaves done: text requests chain configs on them (planner.py)
+  const note = (v, hint) => { const i = el('input'); i.maxLength = 200; i.autocomplete = 'off'; i.value = v || ''; i.placeholder = hint; return i; };
+  const needs = note(c.needs, 'e.g. a sponge held in the gripper'), leaves = note(c.leaves, 'e.g. the floor cabinet doors open');
+  const chain = el('div', 'grid2');
+  chain.append(lab('Needs before it runs (optional, used by text requests)', needs), lab('Leaves done (optional, used by text requests)', leaves));
+  const msg = el('div', 'msg'); msg.setAttribute('role', 'status');
+  const pf = policyFields(c), gf = goalFields(c, msg);
+  const save = el('button', 'primary', 'Save config');
+  const cancel = el('button', '', 'Cancel'); cancel.type = 'button'; cancel.onclick = () => openConfig(null);
+  const acts = el('div', 'actions'); acts.append(save, cancel);
+  form.replaceChildren(head, chain, ...pf.nodes, ...gf.nodes, acts, msg);
+  form.readGoal = () => ({ ...gf.read(), map: mp.value });
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      const r = await api('/api/configs', { name: nm.value.trim(), map: mp.value, label: label.value.trim(),
+                                            needs: needs.value.trim(), leaves: leaves.value.trim(), ...pf.read(), ...gf.read() });
+      say(msg, r.message, true); editingConfig = nm.value.trim(); await refreshConfigs(); refreshMissions();
+    } catch (e) { say(msg, e.message, false); }
+  };
+  renderConfigs(); drawMap();
+}
+$('btn-new-config').onclick = () => openConfig(null);
+function setTab(tab) {
+  document.body.dataset.tab = tab;
+  document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
+  try { localStorage.setItem('tab', tab); } catch (e) { /* the tab is only a convenience */ }
+  drawMap();
+}
+document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
+
+// ---------- editor ----------
+function addStep(step = {}, replacing = null) {   // replacing: return the box instead of appending it
+  const box = el('div', 'step');
+  const head = el('div', 'step-head');
+  const title = el('strong', '', 'Step');
+  const tools = el('div', 'actions');
+  const btn = (text, label, fn) => { const b = el('button', 'small', text); b.type = 'button'; b.setAttribute('aria-label', label); b.onclick = fn; tools.append(b); };
+  btn('↑', 'Move step up', () => { box.previousElementSibling && box.parentNode.insertBefore(box, box.previousElementSibling); numberSteps(); });
+  btn('↓', 'Move step down', () => { box.nextElementSibling && box.parentNode.insertBefore(box.nextElementSibling, box); numberSteps(); });
+  btn('Remove', 'Remove step', () => { box.remove(); numberSteps(); });
+  head.append(title, tools);
+  // what text requests call this step ("kitchen", "wave"); see planner.py
+  const label = el('input'); label.className = 's-label'; label.maxLength = 60; label.autocomplete = 'off';
+  label.placeholder = 'e.g. kitchen, wave'; label.value = step.label ?? '';
+  const type = el('select'); type.className = 's-type';
+  options(type, [['policy', 'Policy (a policy config)'], ['navigate', 'Navigate only'], ['command', 'Command on the robot']], step.type || 'policy');
+
+  // policy step: a policy config, by name (its station, start pose and run settings live in the Policy configs tab)
+  const policyBox = el('div');
+  const legacy = step.policy && !step.config;   // an older step with the policy written inside the mission
+  if (legacy) {
+    box.legacy = { policy: step.policy, start_pose: step.start_pose, goal: step.goal, scan: step.scan,
+                   max_runtime_sec: step.max_runtime_sec, run_args: step.run_args };
+    const conv = el('button', 'small primary', 'Convert to a policy config'); conv.type = 'button';
+    conv.onclick = async () => {
+      const name = prompt('Name of the new policy config (letters, digits, _ or -):', step.label?.replace(/\W+/g, '_') || step.policy);
+      if (!name) return;
+      try {
+        await api('/api/configs', { name, map: $('f-map').value, label: label.value.trim(), ...box.legacy });
+        await refreshConfigs();
+        box.replaceWith(addStep({ type: 'policy', config: name, label: label.value.trim() }, box)); numberSteps();
+        say($('f-msg'), `Policy config ${name} created; save the mission to keep the change.`, true);
+      } catch (e) { say($('f-msg'), e.message, false); }
+    };
+    policyBox.append(el('div', 'muted', `Older step: ${step.policy} with its goal written inside this mission. ` +
+      'Convert it so the station lives in the Policy configs tab and other missions can use it.'), conv);
+  } else {
+    const cfg = el('select'); cfg.className = 's-config';
+    const names = Object.keys(configs);
+    const missing = step.config && !(step.config in configs) ? [[step.config, `⚠ missing: ${step.config} (choose another)`]] : [];
+    options(cfg, [...missing, ...names.map((n) => [n, `${n} — ${configText(n, configs[n])}`])], step.config || names[0]);
+    const info = el('div', 'muted');
+    const showCfg = () => { const c = configs[cfg.value];
+      info.textContent = c ? `Drives to x ${f2(c.goal.x)}, y ${f2(c.goal.y)}, then runs ${c.policy} from ${c.start_pose}.`
+        : 'No policy config chosen: create one in the Policy configs tab.'; drawMap(); };
+    cfg.onchange = showCfg; showCfg();
+    policyBox.append(lab('Policy config', cfg), info);
+  }
+
+  // navigate step: a goal and lidar reference of its own
+  const goalBox = el('div');
+  const gf = goalFields(step.type === 'navigate' ? step : {}, $('f-msg'));
+  goalBox.append(...gf.nodes);
+  box.readGoal = gf.read;
+
   // command step: one shell line, run with bash in the robot's home folder (ROS environment); exit code 0 = success
   const command = el('input'); command.className = 's-command'; command.autocomplete = 'off'; command.spellcheck = false;
   command.maxLength = 1000; command.placeholder = 'e.g. python3 ~/scripts/wave.py --times 2'; command.value = step.command ?? '';
@@ -724,13 +885,14 @@ function addStep(step = {}) {
   cmdBox.append(lab('Command (bash on the robot)', command), lab('Timeout (s)', timeout), el('div', 'muted',
     'Runs where the robot is, after the arm retract (put a Navigate step before it to move first), in the home folder with ' +
     'the ROS environment. Exit code 0 = success; any other code or the timeout stops the mission. Output: ~/.ros/stretch4_mission/command_*.log'));
-  const policyBox = el('div'), goalBox = el('div');
-  policyBox.append(row, runNote, argsBox, info);
-  goalBox.append(el('div', 'muted', 'Navigation goal for the base (map frame):'), goal, use, ref);
-  const show = () => { policyBox.hidden = type.value !== 'policy'; goalBox.hidden = type.value === 'command'; cmdBox.hidden = type.value !== 'command'; };
+
+  const show = () => { policyBox.hidden = type.value !== 'policy'; goalBox.hidden = type.value !== 'navigate'; cmdBox.hidden = type.value !== 'command'; };
   type.onchange = () => { show(); drawMap(); };
   show();
-  box.append(head, lab('Step type (every type starts with the arm retract)', type), policyBox, goalBox, cmdBox);
+  const typeRow = el('div', 'grid2');
+  typeRow.append(lab('Step type (every type starts with the arm retract)', type), lab('Label (optional, used by text requests)', label));
+  box.append(head, typeRow, policyBox, goalBox, cmdBox);
+  if (replacing) return box;
   $('steps').append(box);
   numberSteps();
 }
@@ -740,14 +902,12 @@ function numberSteps() {
 }
 function formSteps() {
   return [...$('steps').children].map((box) => {
-    const q = (cls) => box.querySelector(cls), type = q('.s-type').value;
-    if (type === 'command') return { type, command: q('.s-command').value.trim(),
+    const q = (cls) => box.querySelector(cls), type = q('.s-type').value, label = q('.s-label').value.trim();
+    if (type === 'command') return { type, label, command: q('.s-command').value.trim(),
                                      timeout_sec: q('.s-timeout').value === '' ? null : parseFloat(q('.s-timeout').value) };
-    const goal = { x: parseFloat(q('.g-x').value), y: parseFloat(q('.g-y').value), yaw: parseFloat(q('.g-yaw').value) };
-    if (type === 'navigate') return { type, goal, scan: box.dataset.scan || '' };
-    return { type, policy: q('.s-policy').value, start_pose: q('.s-start-pose').value,
-             max_runtime_sec: q('.s-runtime').value === '' ? null : parseFloat(q('.s-runtime').value),
-             run_args: q('.s-runargs').value.trim() || null, scan: box.dataset.scan || '', goal };
+    if (type === 'navigate') return { type, label, ...box.readGoal() };
+    if (box.legacy) return { type, label, ...box.legacy };   // an older step, saved as it was until converted
+    return { type, label, config: q('.s-config')?.value || '' };
   });
 }
 function loadIntoForm(m) {
@@ -761,6 +921,20 @@ function loadIntoForm(m) {
 }
 $('btn-add-step').onclick = () => addStep();
 function openEditor() { $('edit-box').open = true; $('h-edit').scrollIntoView({ behavior: 'smooth' }); }
+// text request: Claude picks steps of the saved missions on this map, saved as ask_<time> and started
+$('ask-form').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const b = $('btn-ask'), text = $('ask-text').value.trim();
+  if (!text) return;
+  b.disabled = true; b.textContent = 'Planning…'; say($('m-msg'), '', true);
+  try {
+    const r = await api('/api/ask', { text });
+    if (r.mission) { selected = r.mission; $('ask-text').value = ''; say($('m-msg'), `${r.message} Started ${r.mission}.`, true); }
+    else say($('m-msg'), r.message || 'No plan for that request.', false);
+    await refreshMissions(); refreshStatus();
+  } catch (e) { say($('m-msg'), e.message, false); }
+  finally { b.disabled = false; b.textContent = 'Ask & run'; }
+};
 $('btn-new').onclick = () => { selected = null; loadIntoForm(null); renderMissions(); renderStateMachine(); openEditor(); };
 $('f-map').onchange = () => { formTouched = true; drawMap(); };
 $('form').addEventListener('input', () => (formTouched = true));
@@ -834,9 +1008,14 @@ $('log-which').onchange = refreshStatus;
   const preferred = maps.includes(config.default_map) ? config.default_map : undefined;
   options($('nav-map'), mapOpts.length ? mapOpts : [['', 'No maps in maps_dir']], preferred);
   options($('f-map'), mapOpts, preferred);
+  await refreshConfigs();
   await refreshMissions();
   await refreshStatus();  // first, so a new mission's first step starts at the robot's pose
   loadIntoForm(null);
+  openConfig(null);
+  let tab = 'missions';
+  try { tab = localStorage.getItem('tab') || tab; } catch (e) { /* default tab */ }
+  setTab(tab);
   setInterval(refreshStatus, 1000);
 })();
 </script>

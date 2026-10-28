@@ -18,7 +18,9 @@ from pathlib import Path
 
 import yaml
 
-from stretch4_mission.mission_file import AUTO, RUNTIMES_FILE, load_policies, recorded_runtime, validate_mission
+from stretch4_mission.mission_file import (AUTO, CONFIGS_FILE, RUNTIMES_FILE, load_configs, load_policies,
+                                           recorded_runtime, validate_mission)
+from stretch4_mission.planner import KEY_FILE
 from stretch4_mission.policy_bridge import remote_path
 
 OK, WARN, FAIL = 'ok', 'warn', 'fail'
@@ -124,17 +126,44 @@ def check_policies(policies_file):
 
 
 def check_missions(missions_dir, policies, maps):
+    try:
+        configs, errors = load_configs(missions_dir / CONFIGS_FILE, policies, maps)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        configs, errors = {}, {'(file)': str(exc)}
+    for name, exc in errors.items():
+        yield FAIL, f'policy config {name}: {exc}', 'fix it in the Policy configs tab'
+    for name, cfg in configs.items():
+        ok = not cfg['scan'] or (missions_dir / 'scans' / cfg['scan']).is_file()
+        yield ((OK, f'policy config {name} ({cfg["policy"]})', '') if ok else
+               (FAIL, f'policy config {name}: lidar reference {cfg["scan"]} missing', 'capture its goal again'))
     if not any(missions_dir.glob('*.yaml')):
         yield OK, f'no missions yet in {missions_dir}', ''
     for path in sorted(missions_dir.glob('*.yaml')):
         try:
             with open(path) as f:
-                mission = validate_mission(yaml.safe_load(f), policies, maps)
+                mission = validate_mission(yaml.safe_load(f), policies, maps, configs)
             missing = [s['scan'] for s in mission['steps'] if s.get('scan') and not (missions_dir / 'scans' / s['scan']).is_file()]
             yield ((FAIL, f'mission {path.stem}: lidar references missing: {", ".join(missing)}',
                     'capture the goals again in the editor') if missing else (OK, f'mission {path.stem}', ''))
         except (OSError, ValueError, yaml.YAMLError) as exc:
             yield FAIL, f'mission {path.stem}: {exc}', 'open it in the editor (Edit) and save it again'
+
+
+def check_planner(python='~/.venvs/stretch4_planner/bin/python'):
+    """Text requests (optional): the planner venv with the anthropic SDK, and an API key. Warnings, not failures."""
+    python = os.path.expanduser(python)
+    has_sdk = os.path.isfile(python) and subprocess.run([python, '-c', 'import anthropic'], capture_output=True).returncode == 0
+    yield (OK if has_sdk else WARN, f'planner venv with the anthropic SDK ({python})',
+           f'for text requests: python3 -m venv {os.path.dirname(os.path.dirname(python))} && '
+           f'{os.path.dirname(python)}/pip install anthropic')
+    key = Path(os.path.expanduser(KEY_FILE))
+    if os.environ.get('ANTHROPIC_API_KEY'):
+        yield OK, 'Anthropic API key (ANTHROPIC_API_KEY)', ''
+    elif key.is_file():
+        private = key.stat().st_mode & 0o077 == 0
+        yield (OK if private else WARN, f'Anthropic API key ({key})', f'chmod 600 {key}')
+    else:
+        yield WARN, 'no Anthropic API key', f'for text requests: put only the key in {key} and chmod 600 it'
 
 
 def check_runner(runner_file, policies, jetson):
@@ -214,6 +243,7 @@ def main():
     maps = sorted(glob(os.path.join(maps_dir, '*.yaml')) + glob(os.path.join(maps_dir, '*', 'map.yaml')))
     report('Missions', check_missions(src / 'missions', policies, maps))
     report('Policy runner', check_runner(src / 'config' / 'policy_runner.yaml', policies, not args.no_jetson))
+    report('Text requests', check_planner())
     print(f"\n{'READY' if not failed else f'NOT READY: {failed} problem(s) above'}")
     return 1 if failed else 0
 

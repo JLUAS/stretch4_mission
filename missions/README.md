@@ -1,6 +1,7 @@
 # Local missions
 
-The web UI writes site-specific mission YAML files here and lidar reference scans under `missions/scans/`.
+The web UI writes site-specific mission YAML files here, policy configs in `missions/configs/policy_configs.yaml`
+and lidar reference scans under `missions/scans/`.
 They may expose map paths and physical locations, so Git ignores them by default.
 
 Add a mission to version control only after reviewing and sanitizing its map path, goals, and scan data.

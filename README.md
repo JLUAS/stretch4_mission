@@ -1,6 +1,6 @@
 # Overview
 
-*stretch4_mission* runs multi-step missions on the Stretch 4 mobile manipulator (ROS 2 Jazzy, `rmw_zenoh_cpp`) from a web UI. A mission drives the robot with Nav2 to each station, aligns it to a saved lidar reference, and runs a learned policy, a shell command, or nothing there. It is an independent project built on the Stretch 4 ROS 2 packages (`stretch_core`, `stretch_nav2`); it is not maintained by Hello Robot Inc.
+*stretch4_mission* runs multi-step missions on the Stretch 4 mobile manipulator (ROS 2 Jazzy, `rmw_zenoh_cpp`) from a web UI. A mission drives the robot with Nav2 to each station, aligns it to a saved lidar reference, and runs a learned policy, a shell command, or nothing there. Missions are made in the editor, or from a sentence: Claude builds one from the steps of the saved missions (see [Text requests](#text-requests)). It is an independent project built on the Stretch 4 ROS 2 packages (`stretch_core`, `stretch_nav2`); it is not maintained by Hello Robot Inc.
 
 ![Stretch 4 Missions web UI](ui.png)
 
@@ -18,7 +18,7 @@ A **mission** is a map plus ordered **steps**. The three step types can be combi
 |---|---|
 | [config/](config/) | Mission tuning (`mission.yaml`), the policy library (`policies.yaml`), policy runner settings (`policy_runner.yaml`), saved recording lengths (`policy_runtimes.json`) |
 | [launch/](launch/) | `navigation.launch.py` (driver, lidars, Nav2, policy bridge) and `mission.launch.py` (one mission) |
-| [missions/](missions/) | Missions and lidar reference scans written by the UI (ignored by Git) |
+| [missions/](missions/) | Missions, policy configs (`configs/`) and lidar reference scans (`scans/`) written by the UI (ignored by Git) |
 | [scripts/](scripts/) | `run_ui_robot.sh`, the operator entry point |
 | [stretch4_mission/](stretch4_mission/) | Python package: the nodes, the web UI (`web/index.html`) and the command-line tools |
 | [test/](test/) | Pytest suite |
@@ -63,7 +63,21 @@ ssh -N -L 8090:localhost:8090 hello-robot@<robot-ip>
 2. **Each policy needs** a folder on the robot with `start_pose.json` and, optionally, more pose JSON files beside it (each mission step selects one), and its model on the Jetson. For the `recorder` runner the folder is the dataset (`~/data/<name>`); `stretch4_goto_pose --root <dataset> --pose-file <json> --show` prints a pose. For the `lerobot` runner it is `~/repos/lerobot_stretch4/policies/<name>`, and the robot also needs the LeRobot dataset.
 3. **Add each policy** to `config/policies.yaml` (templates at the bottom of the file). `scripts/run_ui_robot.sh` does this for you: before the UI starts it runs `sync_policies` (see [Adding policies](#adding-policies)).
 4. **Build** as in the [Quickstart](#quickstart). The install is a copy, so rebuild after code changes. Policies, missions and `config/mission.yaml` are read from `~/ament_ws/src/stretch4_mission/`, so editing them needs no rebuild (`mission.yaml` only when started through `ros2 launch` without `mission_config:=`).
-5. **On another robot**, nothing changes for the robot itself: `scripts/run_ui_robot.sh` reads its ID from `/etc/hello-robot/hello-robot.conf` (`HELLO_FLEET_ID=stretch-se4-…`), which every Stretch has, so the driver and lidars load that robot's calibration. Do check, on that robot:
+5. **Text requests (optional)**, for [Text requests](#text-requests). On the robot, with internet:
+
+   ```bash
+   # the Anthropic SDK, in its own venv (the ROS Python stays untouched)
+   python3 -m venv ~/.venvs/stretch4_planner
+   ~/.venvs/stretch4_planner/bin/pip install anthropic
+
+   # the API key: only the key, on one line, readable only by the robot's user
+   mkdir -p ~/.config/stretch4_mission
+   nano ~/.config/stretch4_mission/anthropic_api_key
+   chmod 600 ~/.config/stretch4_mission/anthropic_api_key
+   ```
+
+   Create the key in the Claude Console (https://platform.claude.com, **API keys**); the requests are billed to that account. The key file is outside the repository, so it is never committed or copied with the code; never put the key in `config/` or `missions/`. Instead of the file, `ANTHROPIC_API_KEY` exported in the UI's environment also works. The robot needs to reach `api.anthropic.com` (HTTPS). Restart the UI afterwards, and check: `ros2 run stretch4_mission check_robot` shows the venv and the key under **Text requests**.
+6. **On another robot**, nothing changes for the robot itself: `scripts/run_ui_robot.sh` reads its ID from `/etc/hello-robot/hello-robot.conf` (`HELLO_FLEET_ID=stretch-se4-…`), which every Stretch has, so the driver and lidars load that robot's calibration. Do check, on that robot:
    - the start pose folders and datasets: `root:` (and `dataset:` for `lerobot`) of each policy in `config/policies.yaml`;
    - the Jetson: `jetson_host` in `config/policy_runner.yaml`, and the models (`ckpt:`) on it;
    - the map: the script preselects `maps/test.yaml`; without it the UI shows the first map in `~/stretch_user/maps`.
@@ -85,6 +99,7 @@ ros2 run stretch4_mission check_robot
 | Policies | `config/policies.yaml` loads; per policy: start pose folder, `start_pose.json`, the LeRobot dataset (`lerobot`), run time (for `auto`: how many episodes are readable) |
 | Missions | Every `missions/*.yaml` is valid for the current policies and maps, and its lidar references exist |
 | Policy runner | The robot tools of each runner in use, ssh to the Jetson without a password, `stretch4_policy_run` / `stretch4_policy_server` and every policy's model on the Jetson |
+| Text requests | The planner venv with the `anthropic` SDK and an API key (warnings only: the feature is optional) |
 
 Options: `--src <folder>` when the package is not in `~/ament_ws/src/stretch4_mission`, `--maps <folder>`, `--no-jetson` to skip the Jetson.
 
@@ -108,17 +123,17 @@ The script uses this robot's ID, adds new policies to `config/policies.yaml` (`s
 
    ![Step 2: global localization controls and status](docs/ui/02-localize.png)
 
-3. **Create a mission:**
+3. **Set up the policies** in the **Policy configs** tab (top of the page), once per policy and station. See [Policy configs](#policy-configs).
+4. **Create a mission** in the **Missions** tab:
    1. Click **+ New mission**, give it a name and pick the map.
-   2. Click **+ Add step** and pick its **Step type**: *Policy*, *Navigate only* or *Command on the robot*. For a policy step, pick the policy; the list shows how each one runs ("recorder diffusion", "LeRobot pi05", ...) and the step shows the full command. **Policy run time**, beside the start pose, shows how long the policy may run (see [Policy run time](#policy-run-time)), or why it is unknown.
-   3. For policy and navigate steps, drive the robot (gamepad) to **exactly** where that policy's episodes started (or where the robot should stop), then click **Use robot pose as goal**. This copies the base pose (x, y, yaw from `map` → `base_link`) and saves a **lidar reference scan** of that spot (`missions/scans/`, median of 1 s of `/scan_filtered`). Goals appear as numbered arrows on the map, and the step says whether it has a lidar reference.
+   2. Click **+ Add step** and pick its **Step type**: *Policy*, *Navigate only* or *Command on the robot*. A policy step picks a **policy config**; its station, start pose and run settings come from that config.
+   3. For navigate steps, drive the robot (gamepad) to where it should stop, then click **Use robot pose as goal** (it captures a lidar reference, as for a config). Goals appear as numbered arrows on the map.
    4. For command steps, type the **Command** (one line) and, optionally, a **Timeout (s)**. See [Command steps](#command-steps).
-   5. Optional, per policy step: **Policy run time (s)** and **Run arguments** (`stretch4_policy_run` flags for `recorder`, `robot_client` flags for `lerobot`). Empty = the policy's values from `config/policies.yaml`, shown as hints. Flags the bridge sets itself are refused here.
-   6. Reorder steps with ↑ ↓, then **Save mission**.
+   5. Optionally give steps a **Label**, the name [text requests](#text-requests) use for them. Reorder steps with ↑ ↓, then **Save mission**.
 
    ![Step 3: configure policies, start poses, and navigation goals](docs/ui/03-edit-mission.png)
 
-4. **Start** the mission. The state machine shows every step and phase live: pending, active (blue), done (green), skipped (dashed, for example navigation when already in place) and failed (red). Each step shows only the phases of its type. **Stop mission** sends Ctrl-C, and the mission cancels whatever it was doing. Navigation keeps running, so you can start another mission.
+5. **Start** the mission, or type a [text request](#text-requests) in **Ask & run**. The state machine shows every step and phase live: pending, active (blue), done (green), skipped (dashed, for example navigation when already in place) and failed (red). Each step shows only the phases of its type. **Stop mission** sends Ctrl-C, and the mission cancels whatever it was doing. Navigation keeps running, so you can start another mission.
 
    ![Step 4: select a mission and follow its state machine](docs/ui/04-run-mission.png)
 
@@ -132,9 +147,32 @@ Missions are saved by the UI in `missions/<name>.yaml` (`name`, `map`, `steps`).
 
 | Type | Keys |
 |---|---|
-| `policy` | `policy`, `start_pose` (a JSON file in the policy's `root`), `goal: {x, y, yaw}`, `scan` (lidar reference in `missions/scans/`), optional `max_runtime_sec` and `run_args` |
+| `policy` | `config`: the name of a [policy config](#policy-configs) on the mission's map. Older files may instead hold `policy`, `start_pose`, `goal`, `scan`, `max_runtime_sec` and `run_args` in the step; they still run, and the editor converts them into a config. |
 | `navigate` | `goal: {x, y, yaw}`, `scan` |
 | `command` | `command` (one line), optional `timeout_sec` |
+
+Every step can also have a `label` (one line, up to 60 characters), the name [text requests](#text-requests) use for it: "kitchen" for a navigate step, "wave" for a command step.
+
+### Policy configs
+
+A policy config is where and how a policy runs on a map: the **Policy configs** tab sets it once, and mission steps and text requests use it by name. Editing a config changes every mission that uses it; deleting one leaves those missions with an error until their step picks another config. Configs are saved in `missions/configs/policy_configs.yaml` (site data, ignored by Git, like the missions):
+
+```yaml
+configs:
+  cabinet_kitchen:
+    map: /home/hello-robot/stretch_user/maps/final/map.yaml
+    policy: grab_sponge
+    start_pose: start_pose.json         # a pose JSON in the policy's root
+    goal: {x: -6.4454, y: -4.345, yaw: -3.1371}
+    scan: scan_20261027-113134.json     # lidar reference in missions/scans/
+    label: kitchen cabinet              # optional: what text requests call it
+    needs: the floor cabinet doors open  # optional: what it needs before it runs (text requests)
+    leaves: a sponge held in the gripper  # optional: what it leaves done (text requests)
+    max_runtime_sec: 40                 # optional: else the policy's
+    run_args: --fp16 --base             # optional: else the policy's
+```
+
+To make one: **+ New config**, give it a name and the map, pick the **Policy** (the list shows how it runs, "recorder diffusion" or "LeRobot pi05", and the full command appears below), its **Start pose JSON**, optionally a **Label**, **Needs** and **Leaves** (see [Text requests](#text-requests)), **Policy run time (s)** and **Run arguments** (empty = the values from `config/policies.yaml`; flags the bridge sets itself are refused). Then drive the robot (gamepad) to **exactly** where that policy's episodes started and click **Use robot pose as goal**: it copies the base pose (x, y, yaw from `map` → `base_link`) and saves a **lidar reference scan** of that spot (`missions/scans/`, median of 1 s of `/scan_filtered`). **Save config**. The tab shows the configs of the map on the map, and the one being edited as a teal arrow. A config's name cannot change, because missions refer to it; make a new one instead.
 
 ### Between and inside steps
 
@@ -153,6 +191,46 @@ Missions are saved by the UI in `missions/<name>.yaml` (`name`, `map`, `steps`).
 A command step runs one line with `bash -c` on the robot, as the user that started the UI, in the home folder, with the UI's environment (ROS sourced, `RMW_IMPLEMENTATION=rmw_zenoh_cpp`), so a Python script can use `rclpy` and `stretch_driver`. It runs where the robot is, after the arm retract; put a **Navigate only** step before it to move first. Exit code 0 = the step passed; any other code fails the mission. After `timeout_sec` (or `command_timeout` in `config/mission.yaml`, default 300 s; at most 1000 s) the mission sends Ctrl-C to the command's process group, waits 5 s, then kills what is left. **Stop mission** does the same. Output: `~/.ros/stretch4_mission/command_<time>.log`.
 
 **NOTE**: `stretch_driver` stays in navigation mode and nothing else commands the robot while the command runs; the script is responsible for what it moves.
+
+### Text requests
+
+Type a request in **Ask & run** (above the mission list), for example "go to the kitchen, then open the cabinet". Claude (`claude-opus-5-5`) builds a mission from the policy configs and saved missions on the map Nav2 runs, the UI saves it as `missions/ask_<time>.yaml`, and starts it at once. It shows in the mission list, so it can be edited, run again or deleted like any other.
+
+Claude can only combine what is already set up: it answers with structured output whose step ids are an enum of a catalog built from the policy configs and saved missions on that map:
+
+| Catalog entry | From |
+|---|---|
+| `config:<name>` | Every policy config on the map: the robot drives to its station, aligns, and runs the policy. A policy with no config cannot run. |
+| `mission:<name>` | A whole saved mission |
+| `navigate:<mission>:<n>` | A place: the goal of a navigate step |
+| `command:<mission>:<n>` | A command step, word for word |
+| `policy:<mission>:<n>` | An older policy step written inside a mission (until it is converted into a config) |
+
+It never writes a goal, a pose or a command. Any request is accepted, in any language; planning is all or nothing: when any part of the request cannot be done with the saved steps, nothing runs and the UI shows that the mission cannot be completed and which part the robot cannot do. Give configs and steps a `label` ("kitchen cabinet", "wave"): it is the name Claude matches the request against.
+
+Claude also works out what the request needs but does not say. Before planning it thinks through what each step needs and what it leaves done, and adds the steps that provide a missing need, in order: "clean the table" becomes open the floor cabinet → grab the sponge → clean the table, and the reply says why each extra step was added. It assumes nothing is done yet unless the request says so ("the cabinet is already open"). Common sense covers obvious needs; for the ones that depend on the site (where the sponge is kept), write them in each config's **Needs** and **Leaves**, so the chain comes from you and not from a guess:
+
+| Config | Needs | Leaves |
+|---|---|---|
+| `open_floor_cabinet` | | the floor cabinet doors open |
+| `grab_sponge` | the floor cabinet doors open | a sponge held in the gripper |
+| `clean_table` | a sponge held in the gripper | the table clean |
+
+When a needed step does not exist as a config, nothing runs and the reply says what is missing. The robot must be ready to run a mission (Nav2 on the map, every part ready, localized) before a request is sent; each request is one Messages API call, billed to the key's account.
+
+**NOTE**: The plan runs without a confirmation, including command steps chosen from the saved missions. Save in missions only commands you want a text request to be able to run, and keep the physical stop within reach.
+
+Setup: the planner venv and the API key, once per robot ([Installation](#installation), step 5).
+
+| Message under **Ask & run** | Fix |
+|---|---|
+| `…/.venvs/stretch4_planner/bin/python not found` | The planner venv is missing: run the two venv commands of [Installation](#installation), step 5. No UI restart needed. |
+| `no Anthropic API key found` / `no valid Anthropic API key` | Put the key in `~/.config/stretch4_mission/anthropic_api_key` (`chmod 600`), or check it in the Claude Console. |
+| `cannot reach api.anthropic.com` | The robot has no internet: text requests need HTTPS to `api.anthropic.com`. |
+| `Nothing set up on <map>` | No policy configs and no missions on the map Nav2 runs: create configs in the **Policy configs** tab. Older missions with the policy written inside the step still count; their **Convert to a policy config** button (in the mission editor) turns each step into a config. |
+| `Start Nav2 on the map first` / `Not ready: …` / `Localize the robot first` | A request is only sent when a mission could start right away; do steps 1-2 of [Using the web UI](#using-the-web-ui). |
+| The mission cannot be completed … | Not an error: the request needs something no config, place or command on this map provides (the reply says what). Add that config, or ask for less. |
+| `rate limited by the Anthropic API` | Wait a minute and ask again. | `stretch4_mission/planner.py` is the only part that talks to the model (input: the request and the catalog; output: one JSON line `{"plan", "message"}`), so moving to another model changes only that file. The UI parameters `planner_python` and `planner_model` select the venv and the model.
 
 ## Policies
 
@@ -315,6 +393,8 @@ The web UI (HTTP on `127.0.0.1:8090`). It starts `navigation.launch.py` once per
 | `localize_spins` | int | Turns allowed for global localization |
 | `localized_sigma_xy`, `localized_sigma_yaw` | double | AMCL spread that counts as localized (m, rad) |
 | `trajectory_action` | string | Driver action checked for readiness |
+| `planner_python` | string | Python of the planner venv for text requests (default `~/.venvs/stretch4_planner/bin/python`) |
+| `planner_model` | string | Claude model for text requests (default `claude-opus-5-5`) |
 
 ### Launch files
 

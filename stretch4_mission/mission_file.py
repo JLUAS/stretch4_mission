@@ -17,6 +17,8 @@ POSE_RE = re.compile(r'^[A-Za-z0-9_.-]{1,80}\.json$')   # file directly in the p
 MAX_STEPS = 20
 STEP_TYPES = ('policy', 'navigate', 'command')   # a step without type is a policy step (older files)
 MAX_COMMAND = 1000   # characters of a command step's shell line
+MAX_LABEL = 60
+MAX_NOTE = 200   # a policy config's needs / leaves
 AUTO = 'auto'   # max_runtime_sec: auto -> longest recorded episode of the policy + runtime_margin_sec
 RUNNERS = ('recorder', 'lerobot')   # stretch4_policy_recorder (stream/exec + stretch4_policy_run), or LeRobot async
 # the bridge sets these itself, per runner: not allowed in run_args
@@ -205,8 +207,13 @@ def _number(value, what):
     return value
 
 
-def validate_mission(data, policies, maps=None):
-    """Return a normalized mission dict or raise ValueError. maps: allowed map paths (UI only)."""
+def validate_mission(data, policies, maps=None, configs=None):
+    """Return a normalized mission dict or raise ValueError. maps: allowed map paths (UI only).
+
+    configs: the policy configs ({name: config}, load_configs). A policy step names one (config:) and comes back
+    resolved: its policy, goal, lidar reference and start pose, plus config. stored() turns it back into the name.
+    Older files with the policy written inside the step still load.
+    """
     if not isinstance(data, dict):
         raise ValueError('mission must be a mapping')
     name = str(data.get('name', ''))
@@ -225,37 +232,126 @@ def validate_mission(data, policies, maps=None):
         kind = str(step.get('type') or 'policy')
         if kind not in STEP_TYPES:
             raise ValueError(f"step {i}: type must be one of {', '.join(STEP_TYPES)}")
+        label = _label(step, f'step {i}')
         if kind == 'command':
-            out.append(_command_step(step, i))
-            continue
-        goal = step.get('goal') or {}
-        if not isinstance(goal, dict):
-            raise ValueError(f'step {i}: goal must be {{x, y, yaw}}')
-        scan = str(step.get('scan') or '')
-        if scan and not SCAN_RE.match(scan):
-            raise ValueError(f'step {i}: bad reference scan name {scan!r}')
-        entry = {'type': kind, 'goal': {k: _number(goal.get(k), f'step {i} goal.{k}') for k in ('x', 'y', 'yaw')},
-                 'scan': scan}
-        if kind == 'navigate':
-            out.append(entry)
-            continue
-        policy = str(step.get('policy', ''))
-        if policy not in policies:
-            raise ValueError(f'step {i}: unknown policy {policy!r}')
-        start_pose = str(step.get('start_pose') or 'start_pose.json')
-        if not POSE_RE.match(start_pose):
-            raise ValueError(f'step {i}: bad start pose name {start_pose!r}')
-        entry.update(policy=policy, start_pose=start_pose)
-        runtime = step.get('max_runtime_sec')
-        if runtime not in (None, ''):   # this step's own limit; without it the policy's (policies.yaml) applies
-            entry['max_runtime_sec'] = _number(runtime, f'step {i} max_runtime_sec')
-            if entry['max_runtime_sec'] <= 0:
-                raise ValueError(f'step {i} max_runtime_sec: must be > 0 (leave it empty for the policy default)')
-        run_args = str(step.get('run_args') or '').strip()
-        if run_args:   # this step's own runner arguments; without them the policy's apply
-            entry['run_args'] = _run_args(run_args, f'step {i} run_args', policies[policy].get('runner', 'recorder'))
-        out.append(entry)
+            out.append({**_command_step(step, i), **label})
+        elif kind == 'policy' and step.get('config'):
+            config = str(step['config'])
+            cfg = (configs or {}).get(config)
+            if cfg is None:
+                raise ValueError(f'step {i}: unknown policy config {config!r} (Policy configs tab)')
+            if os.path.realpath(cfg['map']) != os.path.realpath(map_path):
+                raise ValueError(f"step {i}: policy config {config} is on {Path(cfg['map']).name}, "
+                                 f'the mission on {Path(map_path).name}')
+            out.append({'type': 'policy', 'config': config,
+                        **{k: v for k, v in cfg.items() if k not in ('map', 'label', 'needs', 'leaves')}, **label})
+        else:
+            entry = {'type': kind, **_place(step, f'step {i}')}
+            if kind == 'policy':   # an older step with the policy written inside it
+                entry.update(_policy_run(step, f'step {i}', policies))
+            out.append({**entry, **label})
     return {'name': name, 'map': map_path, 'steps': out}
+
+
+def stored(mission):
+    """A validated mission as it is saved: a policy config step keeps only its name (and its own label)."""
+    keep = ('type', 'config', 'label')
+    return {**mission, 'steps': [{k: v for k, v in s.items() if k in keep} if s.get('config') else s
+                                 for s in mission['steps']]}
+
+
+def _place(step, where):
+    """A goal {x, y, yaw} on the map plus an optional lidar reference scan (missions/scans/)."""
+    goal = step.get('goal')
+    if not isinstance(goal, dict):
+        raise ValueError(f'{where}: goal must be {{x, y, yaw}}')
+    scan = str(step.get('scan') or '')
+    if scan and not SCAN_RE.match(scan):
+        raise ValueError(f'{where}: bad reference scan name {scan!r}')
+    return {'goal': {k: _number(goal.get(k), f'{where} goal.{k}') for k in ('x', 'y', 'yaw')}, 'scan': scan}
+
+
+def _policy_run(src, where, policies):
+    """The policy, its start pose, and optional own run time / run arguments (else the policy's from policies.yaml)."""
+    policy = str(src.get('policy', ''))
+    if policy not in policies:
+        raise ValueError(f'{where}: unknown policy {policy!r}')
+    start_pose = str(src.get('start_pose') or 'start_pose.json')
+    if not POSE_RE.match(start_pose):
+        raise ValueError(f'{where}: bad start pose name {start_pose!r}')
+    out = {'policy': policy, 'start_pose': start_pose}
+    runtime = src.get('max_runtime_sec')
+    if runtime not in (None, ''):
+        out['max_runtime_sec'] = _number(runtime, f'{where} max_runtime_sec')
+        if out['max_runtime_sec'] <= 0:
+            raise ValueError(f'{where} max_runtime_sec: must be > 0 (leave it empty for the policy default)')
+    run_args = str(src.get('run_args') or '').strip()
+    if run_args:
+        out['run_args'] = _run_args(run_args, f'{where} run_args', policies[policy].get('runner', 'recorder'))
+    return out
+
+
+def _label(step, where):
+    """Optional name ("kitchen", "wave"): what text requests (planner.py) call a step or config. -> {} or {'label': ...}"""
+    label = str(step.get('label') or '').strip()
+    if len(label) > MAX_LABEL or any(c in label for c in '\n\r\0'):
+        raise ValueError(f'{where} label: one line of up to {MAX_LABEL} characters')
+    return {'label': label} if label else {}
+
+
+CONFIGS_FILE = 'configs/policy_configs.yaml'   # under the missions folder, like scans/: site data, like the missions
+CONFIGS_HEADER = """# Policy configs: where and how each policy runs on a map (goal, lidar reference, start pose, run settings).
+# Written by the UI (Policy configs tab). Mission steps name them (config:), so editing one updates every mission.
+"""
+
+
+def validate_config(name, cfg, policies, maps=None):
+    """One policy config -> {map, policy, start_pose, goal, scan, [label, max_runtime_sec, run_args, needs, leaves]}."""
+    where = f'policy config {name}'
+    if not NAME_RE.match(str(name)) or not isinstance(cfg, dict):
+        raise ValueError(f'{where}: name 1-64 letters, digits, "_" or "-", and a mapping')
+    map_path = str(cfg.get('map', ''))
+    if not map_path.endswith('.yaml') or (maps is not None and map_path not in maps):
+        raise ValueError(f'{where}: map: choose one of the maps in the list ({map_path!r} is not)')
+    notes = {}
+    for key in ('needs', 'leaves'):   # what the policy needs before it runs / leaves done after: text requests chain on them
+        text = str(cfg.get(key) or '').strip()
+        if len(text) > MAX_NOTE or any(c in text for c in '\n\r\0'):
+            raise ValueError(f'{where} {key}: one line of up to {MAX_NOTE} characters')
+        if text:
+            notes[key] = text
+    return {'map': map_path, **_policy_run(cfg, where, policies), **_place(cfg, where), **_label(cfg, where), **notes}
+
+
+def load_configs(path, policies, maps=None):
+    """policy_configs.yaml -> ({name: config}, {name: error}). No file = none; a bad entry is reported, not fatal."""
+    path = Path(path)
+    data = yaml.safe_load(path.read_text()) if path.is_file() else {}
+    entries = (data or {}).get('configs') or {} if isinstance(data or {}, dict) else None
+    if not isinstance(entries, dict):
+        raise ValueError(f'{path}: expected "configs:" with one entry per policy config')
+    good, bad = {}, {}
+    for name, cfg in entries.items():
+        try:
+            good[str(name)] = validate_config(str(name), cfg, policies, maps)
+        except ValueError as exc:
+            bad[str(name)] = str(exc)
+    return good, bad
+
+
+def write_config(path, name, cfg):
+    """Set (cfg: a validated config) or delete (cfg None) one entry, keeping the others as written; atomic."""
+    path = Path(path)
+    data = (yaml.safe_load(path.read_text()) if path.is_file() else None) or {}
+    entries = dict(data.get('configs') or {})
+    if cfg is None:
+        entries.pop(name, None)
+    else:
+        entries[name] = cfg
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(CONFIGS_HEADER + yaml.safe_dump({'configs': entries}, sort_keys=False))
+    tmp.replace(path)   # a running mission never reads a half-written file
 
 
 def _command_step(step, i):
@@ -281,8 +377,10 @@ def parse_goal(text):
 
 
 def load_mission(path, policies):
+    """A mission file, its policy config steps resolved from policy_configs.yaml next to it."""
+    configs, _ = load_configs(Path(path).parent / CONFIGS_FILE, policies)
     with open(path) as f:
-        return validate_mission(yaml.safe_load(f), policies)
+        return validate_mission(yaml.safe_load(f), policies, configs=configs)
 
 
 def bridge_params(policy_cfg, pose_file='', max_runtime_sec=None, run_args=None):
