@@ -30,7 +30,7 @@ For changes to launch files, packaging, or ROS dependencies, also rebuild the pa
 
 - Keep each pull request limited to one coherent change.
 - Explain what changed, how it was validated, and what was not tested.
-- Update the README when setup, configuration, or visible behavior changes.
+- Update the README and the matching page in `docs/` when setup, configuration, or visible behavior changes.
 - Do not commit credentials, checkpoints, policy datasets, maps, recorded missions, or robot logs.
 - Do not include third-party logos or imply endorsement by Hello Robot.
 
